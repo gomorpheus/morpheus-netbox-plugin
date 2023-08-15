@@ -2,7 +2,6 @@ package com.morpheusdata.netbox
 
 import com.morpheusdata.core.util.HttpApiClient
 import com.morpheusdata.core.util.NetworkUtility
-import com.morpheusdata.core.DNSProvider
 import com.morpheusdata.core.IPAMProvider
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.Plugin
@@ -11,15 +10,12 @@ import com.morpheusdata.core.util.SyncTask
 import com.morpheusdata.model.AccountIntegration
 import com.morpheusdata.model.Icon
 import com.morpheusdata.model.NetworkDomain
-import com.morpheusdata.model.NetworkDomainRecord
 import com.morpheusdata.model.NetworkPool
 import com.morpheusdata.model.NetworkPoolIp
 import com.morpheusdata.model.NetworkPoolRange
 import com.morpheusdata.model.NetworkPoolServer
 import com.morpheusdata.model.NetworkPoolType
 import com.morpheusdata.model.OptionType
-import com.morpheusdata.model.projection.NetworkDomainIdentityProjection
-import com.morpheusdata.model.projection.NetworkDomainRecordIdentityProjection
 import com.morpheusdata.model.projection.NetworkPoolIdentityProjection
 import com.morpheusdata.model.projection.NetworkPoolIpIdentityProjection
 import com.morpheusdata.response.ServiceResponse
@@ -35,10 +31,11 @@ import io.reactivex.Observable
 import org.apache.commons.validator.routines.InetAddressValidator
 
 @Slf4j
-class NetBoxProvider implements IPAMProvider, DNSProvider {
+class NetBoxProvider implements IPAMProvider {
 	MorpheusContext morpheusContext
 	Plugin plugin
     static String networksPath = 'api/ipam/ip-ranges'
+    static String getIpsPath = 'api/ipam/ip-addresses'
     static String authPath = 'api/users/tokens/provision/'
 
 	static String LOCK_NAME = 'netbox.ipam'
@@ -139,7 +136,7 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 				opts.maxResults = 1
                 tokenResults = login(netboxClient,rpcConfig)
                 if(tokenResults.success) {
-				    def networkList = listNetworks(netboxClient,poolServer, opts)
+				    def networkList = listNetworks(netboxClient,tokenResults.token,poolServer, opts)
                     if(networkList.success) {
                         rtn.success = true
                     } else {
@@ -162,20 +159,19 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 	ServiceResponse<NetworkPoolServer> initializeNetworkPoolServer(NetworkPoolServer poolServer, Map opts) {
 		log.info("initializeNetworkPoolServer: ${poolServer.dump()}")
 		def rtn = new ServiceResponse()
-		try {
-			if(poolServer) {
-				rtn = refreshNetworkPoolServer(poolServer, opts)
-				rtn.data = poolServer
-			} else {
-				rtn.error = 'No pool server found'
-			}
-		} catch(e) {
-			rtn.error = "initializeNetworkPoolServer error: ${e}"
-			log.error("initializeNetworkPoolServer error: ${e}", e)
-		}
-		log.info(rtn.dump())
-		return rtn
-	}
+        try {
+            if(poolServer) {
+                refresh(poolServer)
+                rtn.data = poolServer
+            } else {
+                rtn.error = 'No pool server found'
+            }
+        } catch(e) {
+            rtn.error = "initializeNetworkPoolServer error: ${e}"
+            log.error("initializeNetworkPoolServer error: ${e}", e)
+        }
+        return rtn
+    }
 
 	@Override
 	ServiceResponse createNetworkPoolServer(NetworkPoolServer poolServer, Map opts) {
@@ -195,124 +191,57 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 	 * @param poolServer The Integration Object contains all the saved information regarding configuration of the IPAM Provider.
 	 */
 	@Override
-	void refresh(NetworkPoolServer poolServer) {
-		refreshNetworkPoolServer(poolServer, [:])
-	}
+    void refresh(NetworkPoolServer poolServer) {
+        log.debug("refreshNetworkPoolServer: {}", poolServer.dump())
+        HttpApiClient netboxClient = new HttpApiClient()
+        netboxClient.throttleRate = poolServer.serviceThrottleRate
+        def tokenResults
+        def rpcConfig = getRpcConfig(poolServer)
+        try {
+            def apiUrl = poolServer.serviceUrl
+            def apiUrlObj = new URL(apiUrl)
+            def apiHost = apiUrlObj.host
+            def apiPort = apiUrlObj.port > 0 ? apiUrlObj.port : (apiUrlObj?.protocol?.toLowerCase() == 'https' ? 443 : 80)
+            def hostOnline = ConnectionUtils.testHostConnectivity(apiHost, apiPort, false, true, null)
+            log.debug("online: {} - {}", apiHost, hostOnline)
+            def testResults
+            // Promise
 
-	// TODO: Add to interface
-	def validateService(AccountIntegration integration) { return null }
-	def refreshDnsIntegration(AccountIntegration integration) { return null }
-
-	@Override
-	ServiceResponse<NetworkDomainRecord> createRecord(AccountIntegration integration, NetworkDomainRecord record, Map opts) {
-		ServiceResponse<NetworkDomainRecord> rtn = new ServiceResponse<>()
-		HttpApiClient client = new HttpApiClient()
-		def poolServer = morpheus.network.getPoolServerByAccountIntegration(integration).blockingGet()
-
-		try {
-			if(integration) {
-
-				def fqdn = record.name
-				if(!record.name.endsWith(record.networkDomain.name)) {
-					fqdn = "${record.name}.${record.networkDomain.name}"
-				}
-
-
-				def serviceUrl = cleanServiceUrl(poolServer.serviceUrl)
-				def recordType = record.type
-
-				def apiPath
-				def results = new ServiceResponse()
-				def body
-				def extraAttributes
-				if(poolServer.configMap?.extraAttributes) {
-					extraAttributes = generateExtraAttributes(poolServer,[username: record.createdBy?.username, userId: record.createdBy?.id, dateCreated: MorpheusUtils.formatDate(new Date()) ])
-				}
-
-				switch(recordType) {
-					case 'A':
-						apiPath = getServicePath(poolServer.serviceUrl) + 'record:a'
-						body = [
-							name:fqdn,
-							ipv4addr: record.content
-						]
-						if(extraAttributes) {
-							body.extattrs = extraAttributes
-						}
-
-						results = client.callApi(serviceUrl, apiPath, poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions(headers:['Content-Type':'application/json'], ignoreSSL: poolServer.ignoreSsl,body:body), 'POST')
-
-						break
-					case 'AAAA':
-						apiPath = getServicePath(poolServer.serviceUrl) + 'record:aaaa'
-						body = [
-							name:fqdn,
-							ipv6addr: record.content
-						]
-						if(extraAttributes) {
-							body.extattrs = extraAttributes
-						}
-
-						results = client.callApi(serviceUrl, apiPath, poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions(headers:['Content-Type':'application/json'], ignoreSSL: poolServer.ignoreSsl,body:body), 'POST')
-
-						break
-					case 'CNAME':
-						apiPath = getServicePath(poolServer.serviceUrl) + 'record:cname'
-						body = [
-							name:fqdn,
-							canonical: record.content
-						]
-						if(extraAttributes) {
-							body.extattrs = extraAttributes
-						}
-
-						results = client.callApi(serviceUrl, apiPath, poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions(headers:['Content-Type':'application/json'], ignoreSSL: poolServer.ignoreSsl,body:body), 'POST')
-
-						break
-					case 'TXT':
-						apiPath = getServicePath(poolServer.serviceUrl) + 'record:txt'
-						body = [
-							name:fqdn,
-							text: record.content
-						]
-						if(extraAttributes) {
-							body.extattrs = extraAttributes
-						}
-
-						results = client.callApi(serviceUrl, apiPath, poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions(headers:['Content-Type':'application/json'], ignoreSSL: poolServer.ignoreSsl,body:body), 'POST')
-						break
-					case 'MX':
-						apiPath = getServicePath(poolServer.serviceUrl) + 'record:mx'
-						body = [
-							name:fqdn,
-							mail_exchanger: record.content
-						]
-						if(extraAttributes) {
-							body.extattrs = extraAttributes
-						}
-
-						results = client.callApi(serviceUrl, apiPath, poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions(headers:['Content-Type':'application/json'], ignoreSSL: poolServer.ignoreSsl,body:body), 'POST')
-						break
-				}
-
-				log.info("createRecord results: ${results}")
-				if(results.success) {
-					record.externalId = results.content.substring(1, results.content.length() - 1)
-					return new ServiceResponse<NetworkDomainRecord>(true,null,null,record)
-					rtn.data = record
-					rtn.success = true
-				}
-			} else {
-				log.warn("no integration")
-			}
-		} catch(e) {
-			log.error("provisionServer error: ${e}", e)
-		} finally {
-			client.callApi(poolServer.serviceUrl, getServicePath(poolServer.serviceUrl) + 'logout', poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions([headers:['Content-Type':'application/json'], ignoreSSL: poolServer.ignoreSsl]), 'POST')
-			client.shutdownClient()
-		}
-		return rtn
-	}
+            if(hostOnline) {
+                tokenResults = login(netboxClient,rpcConfig)
+                if(tokenResults.success) {
+                    testResults = testNetworkPoolServer(netboxClient,tokenResults.token as String,poolServer) as ServiceResponse<Map>
+                    if(!testResults?.success) {
+                        morpheus.network.updateNetworkPoolServerStatus(poolServer, AccountIntegration.Status.error, 'error calling NetBox').blockingGet()
+                    } else {
+                        morpheus.network.updateNetworkPoolServerStatus(poolServer, AccountIntegration.Status.syncing).blockingGet()
+                    }
+                } else {
+                    morpheus.network.updateNetworkPoolServerStatus(poolServer, AccountIntegration.Status.error, 'error authenticating with NetBox').blockingGet()
+                }
+            } else {
+                morpheus.network.updateNetworkPoolServerStatus(poolServer, AccountIntegration.Status.error, 'NetBox api not reachable')
+            }
+            Date now = new Date()
+            if(testResults?.success) {
+                String token = tokenResults?.token as String
+                cacheNetworks(netboxClient,token,poolServer)
+                cacheZones(netboxClient,token,poolServer)
+                if(poolServer?.configMap?.inventoryExisting) {
+                    cacheIpAddressRecords(netboxClient,poolServer)
+                }
+                log.info("Sync Completed in ${new Date().time - now.time}ms")
+                morpheus.network.updateNetworkPoolServerStatus(poolServer, AccountIntegration.Status.ok).subscribe().dispose()
+            }
+        } catch(e) {
+            log.error("refreshNetworkPoolServer error: ${e}", e)
+        } finally {
+            if(tokenResults?.success) {
+                logout(netboxClient,rpcConfig,tokenResults.token as String)
+            }
+            netboxClient.shutdownClient()
+        }
+    }
 
 	protected ServiceResponse refreshNetworkPoolServer(NetworkPoolServer poolServer, Map opts) {
 		def rtn = new ServiceResponse()
@@ -333,7 +262,7 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 			if(hostOnline) {
                 tokenResults = login(netboxClient,rpcConfig)
                 if(tokenResults.success) {
-				    testResults = testNetworkPoolServer(netboxClient,poolServer) as ServiceResponse<Map>
+				    testResults = testNetworkPoolServer(netboxClient,tokenResults.token as String,poolServer) as ServiceResponse<Map>
                     if(!testResults.success) {
                         //NOTE invalidLogin was only ever set to false.
                         morpheus.network.updateNetworkPoolServerStatus(poolServer, AccountIntegration.Status.error, 'error calling NetBox').blockingGet()
@@ -362,7 +291,7 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 			log.error("refreshNetworkPoolServer error: ${e}", e)
 		} finally {
             if(tokenResults?.success) {
-                logout(bluecatClient,rpcConfig,tokenResults.token)
+                logout(netboxClient,rpcConfig,tokenResults.token)
             }
 			netboxClient.shutdownClient()
 		}
@@ -376,12 +305,12 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 		log.info("listResults: {}", listResults.dump())
 
 		if(listResults.success) {
-			List apiItems = listResults.data as List<Map>
+			List apiItems = listResults.networks as List<Map>
 			Observable<NetworkPoolIdentityProjection> poolRecords = morpheus.network.pool.listIdentityProjections(poolServer.id)
 
 			SyncTask<NetworkPoolIdentityProjection,Map,NetworkPool> syncTask = new SyncTask(poolRecords, apiItems as Collection<Map>)
 			syncTask.addMatchFunction { NetworkPoolIdentityProjection domainObject, Map apiItem ->
-				domainObject.externalId == apiItem.'_ref'
+				domainObject.externalId == apiItem.id
 			}.onDelete {removeItems ->
 				morpheus.network.pool.remove(poolServer.id, removeItems).blockingGet()
 			}.onAdd { itemsToAdd ->
@@ -401,38 +330,39 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 	}
 
 	void addMissingPools(NetworkPoolServer poolServer, Collection<Map> chunkedAddList) {
-		def poolType = new NetworkPoolType(code: 'infoblox')
-		def poolTypeIpv6 = new NetworkPoolType(code: 'infobloxipv6')
+		def poolType = new NetworkPoolType(code: 'netbox')
+		def poolTypeIpv6 = new NetworkPoolType(code: 'netboxipv6')
 		List<NetworkPool> missingPoolsList = []
 		List<NetworkPoolRange> ranges = []
-		chunkedAddList?.each { Map add ->
-			def networkIp = add.network
+		chunkedAddList?.results.each { Map network ->
+			def networkIp = network.network
 			def newNetworkPool
+            def startAddress = network.start_address
+            def endAddress = network.end_address
+            def size = network.size
 			def rangeConfig
             def addRange
-			def networkView = add.network_view
-			def displayName = networkView ? (networkView + ' ' + networkIp) : networkIp
 			def networkInfo 
-			if(!networkIp.contains(':')) {
-				networkInfo = MorpheusUtils.getNetworkPoolConfig(networkIp)
-				def addConfig = ["poolServer": poolServer, cidr: networkIp, account: poolServer.account,
-								owner: poolServer.account, name:networkIp, externalId: add.'_ref', displayName: displayName,
-								type: poolType, poolEnabled: true, parentType: 'NetworkPoolServer', parentId: poolServer.id]
-				addConfig += networkInfo.config
-				newNetworkPool =new NetworkPool(addConfig)
-				newNetworkPool.ipRanges = []
-				networkInfo?.ranges?.each { range ->
-					rangeConfig = [startAddress: range.startAddress, endAddress: range.endAddress, addressCount: addConfig.ipCount]
-					addRange = new NetworkPoolRange(rangeConfig)
-					newNetworkPool.ipRanges.add(addRange)
-				}
-			} else {
-				def addConfig = ["poolServer": poolServer, cidr: networkIp, account: poolServer.account,
-								owner: poolServer.account, name:networkIp, externalId: add.'_ref', displayName: displayName,
-								type: poolTypeIpv6, poolEnabled: true, parentType: 'NetworkPoolServer', parentId: poolServer.id]
+			if(network.family.value == 4) {
+				networkInfo = getNetworkPoolConfig(networkCidr)
+
+                def addConfig = [account:poolServer.account, poolServer:poolServer, owner:poolServer.account, name:network.display, externalId:"${network.id}",
+                                 internalId:"${network.configurationId}", cidr: startAddress, type: poolType, poolEnabled:true, parentType:'NetworkPoolServer', parentId:poolServer.id,
+                                 dnsSearchPath:defaultViewId]
+                addConfig += networkInfo.config
                 newNetworkPool = new NetworkPool(addConfig)
                 newNetworkPool.ipRanges = []
-                rangeConfig = [cidrIPv6: networkIp, startIPv6Address: networkIp.tokenize('/')[0], endIPv6Address: networkIp.tokenize('/')[0]]
+                rangeConfig = [startAddress:startAddress, endAddress:endAddress, addressCount:size]
+                addRange = new NetworkPoolRange(rangeConfig)
+                newNetworkPool.ipRanges.add(addRange)
+                }
+            if(network.family.value == 6) {
+				def addConfig = [account:poolServer.account, poolServer:poolServer, owner:poolServer.account, name:network.display, externalId:"${network.id}",
+                                 internalId:"${network.configurationId}", cidr: startAddress, type: poolTypeIpv6, poolEnabled:true, parentType:'NetworkPoolServer', parentId:poolServer.id,
+                                 dnsSearchPath:defaultViewId]
+                newNetworkPool = new NetworkPool(addConfig)
+                newNetworkPool.ipRanges = []
+                rangeConfig = [cidrIPv6: networkCidr, startIPv6Address: startAddress, endIPv6Address: endAddress,addressCount:size]
                 addRange = new NetworkPoolRange(rangeConfig)
                 newNetworkPool.ipRanges.add(addRange)
 			}
@@ -443,14 +373,13 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 
 	void updateMatchedPools(NetworkPoolServer poolServer, List<SyncTask.UpdateItem<NetworkPool,Map>> chunkedUpdateList) {
 		List<NetworkPool> poolsToUpdate = []
-		chunkedUpdateList?.each { update ->
+		chunkedUpdateList?.results.each { update ->
 			NetworkPool existingItem = update.existingItem
 			if(existingItem) {
 				//update view ?
 				def save = false
 				def networkIp = update.masterItem.network
-				def networkView = update.masterItem.network_view
-				def displayName = networkView ? (networkView + ' ' + networkIp) : networkIp
+				def displayName = update.display
 				if(existingItem?.displayName != displayName) {
 					existingItem.displayName = displayName
 					save = true
@@ -480,7 +409,6 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 		}
 	}
 	
-
 	@Override
 	ServiceResponse<NetworkPoolIp> createHostRecord(NetworkPoolServer poolServer, NetworkPool networkPool, NetworkPoolIp networkPoolIp, NetworkDomain domain = null, Boolean createARecord = false, Boolean createPtrRecord = false) {
 		HttpApiClient client = new HttpApiClient();
@@ -535,11 +463,6 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 					]
 				}
 			}
-			def extraAttributes
-			if (poolServer.configMap?.extraAttributes) {
-				extraAttributes = generateExtraAttributes(poolServer, [username: networkPoolIp.createdBy?.username, userId: networkPoolIp.createdBy?.id, dateCreated: MorpheusUtils.formatDate(new Date())])
-				body.extattrs = extraAttributes
-			}
 
 			log.debug("body: ${body}")
 			def results = client.callApi(serviceUrl, apiPath, poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions(headers: ['Content-Type': 'application/json'], ignoreSSL: poolServer.ignoreSsl,
@@ -556,121 +479,22 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 				}
 				networkPoolIp.externalId = ipResults.results?.getAt('_ref')
 				networkPoolIp.ipAddress = newIp
-				if(createARecord) {
-					networkPoolIp.domain = domain
-				}
+
 				if (networkPoolIp.id) {
 					networkPoolIp = morpheus.network.pool.poolIp.save(networkPoolIp)?.blockingGet()
 				} else {
 					networkPoolIp = morpheus.network.pool.poolIp.create(networkPoolIp)?.blockingGet()
 				}
 
-
-				if (createARecord && domain) {
-					def aRecordRef
-					def domainRecord
-					def ptrName
-					def ptrDomainRecord
-					if (networkPool.type.code == 'infoblox') {
-						apiPath = getServicePath(poolServer.serviceUrl) + 'record:a'
-						body = [
-								name    : hostname,
-								ipv4addr: newIp
-						]
-						if (extraAttributes) {
-							body.extattrs = extraAttributes
-						}
-						results = client.callApi(serviceUrl, apiPath, poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions(headers: ['Content-Type': 'application/json'], ignoreSSL: poolServer.ignoreSsl,
-								body: body, contentType: ContentType.APPLICATION_JSON), 'POST')
-						if (!results.success) {
-							log.warn("A Record Creation Failed")
-						} else {
-
-							aRecordRef = results.content.substring(1, results.content.length() - 1)
-							domainRecord = new NetworkDomainRecord(networkDomain: domain, networkPoolIp: networkPoolIp, name: hostname, fqdn: hostname, source: 'user', type: 'A', externalId: aRecordRef)
-							domainRecord.content = newIp
-							morpheus.network.domain.record.create(domainRecord).blockingGet()
-							networkPoolIp.internalId = aRecordRef
-						}
-						if (createPtrRecord) {
-							// create PTR Record
-							ptrName = "${newIp.tokenize('.').reverse().join('.')}.in-addr.arpa.".toString()
-							apiPath = getServicePath(poolServer.serviceUrl) + 'record:ptr'
-							body = [
-									name    : ptrName,
-									ptrdname: hostname,
-									ipv4addr: newIp
-							]
-							if (extraAttributes) {
-								body.extattrs = extraAttributes
-							}
-							results = client.callApi(serviceUrl, apiPath, poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions(headers: ['Content-Type': 'application/json'], ignoreSSL: poolServer.ignoreSsl,
-									body: body), 'POST')
-							if (!results.success) {
-								log.warn("PTR Record Creation Failed")
-							} else {
-								String prtRecordRef = results.content.substring(1, results.content.length() - 1)
-								ptrDomainRecord = new NetworkDomainRecord(networkDomain: domain, networkPoolIp: networkPoolIp, name: ptrName, fqdn: hostname, source: 'user', type: 'PTR', externalId: prtRecordRef)
-								morpheus.network.domain.record.create(ptrDomainRecord).blockingGet()
-								log.info("got PTR record: {}", results)
-								networkPoolIp.ptrId = prtRecordRef
-							}
-						}
-					} else {
-						apiPath = getServicePath(poolServer.serviceUrl) + 'record:aaaa'
-						body = [
-								name    : hostname,
-								ipv6addr: newIp
-						]
-						if (extraAttributes) {
-							body.extattrs = extraAttributes
-						}
-						results = client.callApi(serviceUrl, apiPath, poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions(headers: ['Content-Type': 'application/json'], ignoreSSL: poolServer.ignoreSsl,
-								body: body, contentType: ContentType.APPLICATION_JSON), 'POST')
-						if (!results.success) {
-							log.warn("A Record Creation Failed")
-						} else {
-
-							aRecordRef = results.content.substring(1, results.content.length() - 1)
-							domainRecord = new NetworkDomainRecord(networkDomain: domain, networkPoolIp: networkPoolIp, name: hostname, fqdn: hostname, source: 'user', type: 'AAAA', externalId: aRecordRef)
-							domainRecord.content = newIp
-							morpheus.network.domain.record.create(domainRecord).blockingGet()
-							networkPoolIp.internalId = aRecordRef
-						}
-						if (createPtrRecord) {
-							// create PTR Record
-							ptrName = "${newIp.tokenize('.').reverse().join('.')}.in-addr.arpa.".toString()
-							apiPath = getServicePath(poolServer.serviceUrl) + 'record:ptr'
-							body = [
-									name    : ptrName,
-									ptrdname: hostname,
-									ipv6addr: newIp
-							]
-							if (extraAttributes) {
-								body.extattrs = extraAttributes
-							}
-							results = client.callApi(serviceUrl, apiPath, poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions(headers: ['Content-Type': 'application/json'], ignoreSSL: poolServer.ignoreSsl,
-									body: body), 'POST')
-							if (!results.success) {
-								log.warn("PTR Record Creation Failed")
-							} else {
-								String prtRecordRef = results.content.substring(1, results.content.length() - 1)
-								ptrDomainRecord = new NetworkDomainRecord(networkDomain: domain, networkPoolIp: networkPoolIp, name: ptrName, fqdn: hostname, source: 'user', type: 'PTR', externalId: prtRecordRef)
-								morpheus.network.domain.record.create(ptrDomainRecord).blockingGet()
-								log.info("got PTR record: {}", results)
-								networkPoolIp.ptrId = prtRecordRef
-							}
-						}
-					}
-					networkPoolIp = morpheus.network.pool.poolIp.save(networkPoolIp)?.blockingGet()
-				}
 				return ServiceResponse.success(networkPoolIp)
 			} else {
 				def resultContent = results.content ? new JsonSlurper().parseText(results.content) : [:]
 				return ServiceResponse.error("Error allocating host record to the specified ip: ${resultContent?.text}", null, networkPoolIp)
 			}
 		} finally {
-			client.callApi(poolServer.serviceUrl, getServicePath(poolServer.serviceUrl) + 'logout', poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions([headers:['Content-Type':'application/json'], ignoreSSL: poolServer.ignoreSsl]), 'POST')
+			if(tokenResults?.success) {
+                logout(client,rpcConfig,tokenResults.token as String)
+            }
 			client.shutdownClient()
 		}
 	}
@@ -758,78 +582,51 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 	}
 
 	private ServiceResponse listNetworks(HttpApiClient client, String token, NetworkPoolServer poolServer, Map opts) {
-		try {
-            def rpcConfig = getRpcConfig(poolServer)
-            def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
-            def apiPath = getServicePath(rpcConfig.serviceUrl) + networksPath         
-            def doPaging = opts.doPaging != null ? opts.doPaging : true
-            def hasMore = true
-            def attempt = 0
-            def start = 0
-            def count = opts.maxResults != null ? opts.maxResults : 100
-            while(hasMore && attempt < 1000) {
-                attempt++
-                HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
-                requestOptions.headers = [Authorization: "Token ${token}".toString()]
-                requestOptions.queryParams = [type: allNetwork, start:start.toString(), count:count.toString()]
-                if(opts.parentId) {
-                    requestOptions.queryParams.parentId = opts.parentId.toString()
-                }
+        def rtn = [success:false, error:false, networks:[]]
 
-                def results = client.callJsonApi(apiUrl,apiPath,null,null,requestOptions,'GET')
+        def rpcConfig = getRpcConfig(poolServer)
+        def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
+        def apiPath = getServicePath(rpcConfig.serviceUrl) + networksPath         
+        def doPaging = opts.doPaging != null ? opts.doPaging : true
+        def hasMore = true
+        def attempt = 0
+        def start = 0
+        def count = opts.maxResults != null ? opts.maxResults : 100
+        while(hasMore && attempt < 1000) {
+            attempt++
+            HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
+            requestOptions.headers = [Authorization: "Token ${token}".toString()]
+            requestOptions.queryParams = [offset:start.toString(), limit:count.toString()]
 
-                if(results?.success && results?.error != true) {
-                    rtn.success = true
-                    if(results.data?.size() > 0) {
-                        rtn.networks += results.data
-                        if(doPaging == true && results.data?.size() >= count) {
-                            start += count
-                        } else {
-                            hasMore = false
-                        }
+            def results = client.callJsonApi(apiUrl,apiPath,null,null,requestOptions,'GET')
+
+            if(results?.success && results?.error != true) {
+                rtn.success = true
+                if(results.data?.results?.size() > 0) {
+                    rtn.networks += results.data.results
+                    if(doPaging == true && results.data?.results?.size() >= count) {
+                        start += count
                     } else {
-                        //no more content
                         hasMore = false
                     }
                 } else {
-                    //error
+                    //no more content
                     hasMore = false
-                    //check for bad creds
-                    if(results.errorCode == 401i) {
-                        rtn.errorCode = 401i
-                        rtn.invalidLogin = true
-                        rtn.success = true
-                        rtn.error = true
-                        rtn.msg = results.content ?: 'invalid credentials'
-                    } else if(results.errorCode == 400i) {
-                        //request
-                        rtn.errorCode = 400i
-                        //consider this success - just no content
-                        rtn.success = true
-                        rtn.error = false
-                        rtn.msg = results.content ?: 'invalid api request'
-                    } else {
-                        rtn.errorCode = results.errorCode ?: 500i
-                        rtn.success = false
-                        rtn.error = true
-                        rtn.msg = results.content ?: 'unknown api error'
-                        log.warn("error: ${rtn.errorCode} - ${rtn.content}")
-                    }
                 }
+            } else {
+                rtn.msg = results?.error
             }
-        } catch(e) {
-            log.error("listNetworks error: ${e}", e)
         }
         log.debug("List Networks Results: ${rtn}")
         return rtn
 	}
 
 	// cacheIpAddressRecords
-	void cacheIpAddressRecords(HttpApiClient client, NetworkPoolServer poolServer, Map opts) {
+	void cacheIpAddressRecords(HttpApiClient client, String token, NetworkPoolServer poolServer, Map opts) {
 		morpheus.network.pool.listIdentityProjections(poolServer.id).buffer(50).flatMap { Collection<NetworkPoolIdentityProjection> poolIdents ->
 			return morpheus.network.pool.listById(poolIdents.collect{it.id})
 		}.flatMap { NetworkPool pool ->
-			def listResults = listHostRecords(client, poolServer, pool, opts)
+			def listResults = listHostRecords(client, token, poolServer, pool, opts)
 			if (listResults.success && listResults.data != null) {
 				List<Map> apiItems = listResults.data as List<Map>
 				Observable<NetworkPoolIpIdentityProjection> poolIps = morpheus.network.pool.poolIp.listIdentityProjections(pool.id)
@@ -921,67 +718,80 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 	}
 
 
-	ServiceResponse listHostRecords(HttpApiClient client, NetworkPoolServer poolServer, NetworkPool networkPool, Map opts) {
-		def rtn = new ServiceResponse()
-		rtn.data = []
-		def networkView = networkPool.externalId.tokenize('/')[3]
-		def serviceUrl = cleanServiceUrl(poolServer.serviceUrl) //ipv4address?network=10.10.10.0/24
-		def apiPath
-		if (networkPool.type.code == 'infoblox') {
-			apiPath = getServicePath(poolServer.serviceUrl) + 'ipv4address'
-		} else {
-			apiPath = getServicePath(poolServer.serviceUrl) + 'ipv6address'
-		}
-		log.debug("url: ${serviceUrl} path: ${apiPath}")
-		def hasMore = true
-		def doPaging = opts.doPaging != null ? opts.doPaging : true
-		def maxResults = opts.maxResults ?: 256
-		def pageId = null
-		def attempt = 0
-		def pageQuery = [network: networkPool.name, network_view: networkView, status: 'USED','_return_as_object':'1' ,'_paging':'1', '_max_results':maxResults.toString()]
+	ServiceResponse listHostRecords(HttpApiClient client, String token, NetworkPoolServer poolServer, NetworkPool networkPool, Map opts) {
+		def rtn = [success:false, error:false, networks:[]]
+        try {
+            def rpcConfig = getRpcConfig(poolServer)
+            def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
+            def apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
+            def doPaging = opts.doPaging != null ? opts.doPaging : true
+            def hasMore = true
+            def attempt = 0
+            def start = 0
+            def count = opts.maxResults != null ? opts.maxResults : 100
+            while(hasMore && attempt < 1000) {
+                attempt++
+                HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
+                requestOptions.headers = [Authorization: "Token ${token}".toString()]
+                requestOptions.queryParams = [offset:start.toString(), limit:count.toString()]
 
-		while(hasMore && attempt < 1000) {
-			if(pageId != null)
-				pageQuery['_page_id'] = pageId
-			//load results
-			def results = client.callJsonApi(serviceUrl, apiPath, poolServer.credentialData?.username ?: poolServer.serviceUsername, poolServer.credentialData?.password ?: poolServer.servicePassword, new HttpApiClient.RequestOptions(headers:['Content-Type':'application/json'],
-																												queryParams:pageQuery, ignoreSSL: poolServer.ignoreSsl), 'GET')
-			log.debug("listIp4 results: {}",results)
-			if(results?.success && !results?.hasErrors()) {
-				rtn.success = true
+                def results = client.callJsonApi(apiUrl,apiPath,null,null,requestOptions,'GET')
 
-				rtn.headers = results.headers
-				def pageResults = results.data
-
-				if(pageResults?.result?.size() > 0) {
-					if(pageResults.next_page_id)
-						pageId = pageResults.next_page_id
-					else
-						hasMore = false
-					rtn.data += pageResults.result
-				} else {
-					hasMore = false
-				}
-			} else {
-				if(!rtn.success) {
-					rtn.msg = results.error
-				}
-				hasMore = false
-			}
-			attempt++
-		}
-		return rtn
+                if(results?.success && results?.error != true) {
+                    rtn.success = true
+                    if(results.data?.size() > 0) {
+                        rtn.networks += results.data
+                        if(doPaging == true && results.data?.size() >= count) {
+                            start += count
+                        } else {
+                            hasMore = false
+                        }
+                    } else {
+                        //no more content
+                        hasMore = false
+                    }
+                } else {
+                    //error
+                    hasMore = false
+                    //check for bad creds
+                    if(results.errorCode == 401i) {
+                        rtn.errorCode = 401i
+                        rtn.invalidLogin = true
+                        rtn.success = true
+                        rtn.error = true
+                        rtn.msg = results.content ?: 'invalid credentials'
+                    } else if(results.errorCode == 400i) {
+                        //request
+                        rtn.errorCode = 400i
+                        //consider this success - just no content
+                        rtn.success = true
+                        rtn.error = false
+                        rtn.msg = results.content ?: 'invalid api request'
+                    } else {
+                        rtn.errorCode = results.errorCode ?: 500i
+                        rtn.success = false
+                        rtn.error = true
+                        rtn.msg = results.content ?: 'unknown api error'
+                        log.warn("error: ${rtn.errorCode} - ${rtn.content}")
+                    }
+                }
+            }
+        } catch(e) {
+            log.error("listHostRecords error: ${e}", e)
+        }
+        log.debug("listHostRecords Results: ${rtn}")
+        return rtn
 	}
 
-	ServiceResponse testNetworkPoolServer(HttpApiClient client, NetworkPoolServer poolServer) {
+	ServiceResponse testNetworkPoolServer(HttpApiClient client, String token, NetworkPoolServer poolServer) {
 		def rtn = new ServiceResponse()
 		try {
 			def opts = [doPaging:false, maxResults:1]
-			def networkList = listNetworks(client, poolServer, opts)
+			def networkList = listNetworks(client, token, poolServer, opts)
 			rtn.success = networkList.success
 			rtn.data = [:]
 			if(!networkList.success) {
-				rtn.msg = 'error connecting to infoblox'
+				rtn.msg = 'error connecting to NetBox'
 			}
 		} catch(e) {
 			rtn.success = false
@@ -1024,46 +834,20 @@ class NetBoxProvider implements IPAMProvider, DNSProvider {
 		return new Icon(path:"netbox.svg", darkPath: "netbox.svg")
 	}
 
-	/**
-	 * Periodically called to refresh and sync data coming from the relevant integration. Most integration providers
-	 * provide a method like this that is called periodically (typically 5 - 10 minutes). DNS Sync operates on a 10min
-	 * cycle by default. Useful for caching DNS Records created outside of Morpheus.
-	 * NOTE: This method is unused when paired with a DNS Provider so simply return null
-	 * @param integration The Integration Object contains all the saved information regarding configuration of the DNS Provider.
-	 */
-	@Override
-	void refresh(AccountIntegration integration) {
-	 //NOOP
-	}
-
-	/**
-	 * Validation Method used to validate all inputs applied to the integration of an DNS Provider upon save.
-	 * If an input fails validation or authentication information cannot be verified, Error messages should be returned
-	 * via a {@link ServiceResponse} object where the key on the error is the field name and the value is the error message.
-	 * If the error is a generic authentication error or unknown error, a standard message can also be sent back in the response.
-	 * NOTE: This is unused when paired with an IPAMProvider interface
-	 * @param integration The Integration Object contains all the saved information regarding configuration of the DNS Provider.
-	 * @param opts any custom payload submission options may exist here
-	 * @return A response is returned depending on if the inputs are valid or not.
-	 */
-	@Override
-	ServiceResponse verifyAccountIntegration(AccountIntegration integration, Map opts) {
-		//NOOP
-		return null
-	}
-
     def login(HttpApiClient client, rpcConfig) {
         def rtn = [success:false]
         try {
-            HttpApiClient.RequestOptions apiOpts = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSsl)
+            HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
+            requestOptions.headers = ['content-type':'application/json']
+            requestOptions.body = JsonOutput.toJson([username:rpcConfig.username, password:rpcConfig.password])
+
             def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
             def apiPath = getServicePath(rpcConfig.serviceUrl) + authPath
-            apiOpts.body = JsonOutput.toJson([username:rpcConfig.username, password:rpcConfig.password])
-            def results = client.callJsonApi(apiUrl,apiPath,null,null,apiOpts,"POST")
 
+            def results = client.callJsonApi(apiUrl,apiPath,requestOptions,'POST')
             if(results?.success && results?.error != true) {
                 log.debug("login: ${results}")
-                rtn.token = results.key.trim()
+                rtn.token = results.data?.key?.trim()
                 rtn.success = true
             } else {
                 //error
