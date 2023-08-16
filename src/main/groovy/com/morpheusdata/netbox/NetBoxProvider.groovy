@@ -251,7 +251,7 @@ class NetBoxProvider implements IPAMProvider {
 			Observable<NetworkPoolIdentityProjection> poolRecords = morpheus.network.pool.listIdentityProjections(poolServer.id)
 			SyncTask<NetworkPoolIdentityProjection,Map,NetworkPool> syncTask = new SyncTask(poolRecords, apiItems as Collection<Map>)
 			syncTask.addMatchFunction { NetworkPoolIdentityProjection domainObject, Map apiItem ->
-				domainObject.externalId == apiItem.id
+				domainObject.externalId == "${apiItem.id}"
 			}.onDelete {removeItems ->
 				morpheus.network.pool.remove(poolServer.id, removeItems).blockingGet()
 			}.onAdd { itemsToAdd ->
@@ -309,13 +309,14 @@ class NetBoxProvider implements IPAMProvider {
 
 	void updateMatchedPools(NetworkPoolServer poolServer, List<SyncTask.UpdateItem<NetworkPool,Map>> chunkedUpdateList) {
 		List<NetworkPool> poolsToUpdate = []
-		chunkedUpdateList?.results.each { update ->
+		chunkedUpdateList?.each { update ->
 			NetworkPool existingItem = update.existingItem
+            Map network = update.masterItem
 			if(existingItem) {
 				//update view ?
 				def save = false
-				def networkIp = update.start_address
-				def displayName = update.display
+				def networkIp = network.start_address
+				def displayName = network.display
 				if(existingItem?.displayName != displayName) {
 					existingItem.displayName = displayName
 					save = true
@@ -324,13 +325,6 @@ class NetBoxProvider implements IPAMProvider {
 					existingItem.cidr = networkIp
 					save = true
 				}
-				if(!existingItem.ipRanges) {
-                    log.info("range: ${range}")
-                    def rangeConfig = [networkPool:existingItem, startAddress:update.start_address.tokenize('/')[0], endAddress:update.end_address.tokenize('/')[0], addressCount:update.size]
-                    def addRange = new NetworkPoolRange(rangeConfig)
-                    existingItem.addToIpRanges(addRange)
-                    save = true
-                }
                 if(save) {
                     poolsToUpdate << existingItem
                 }
@@ -344,14 +338,20 @@ class NetBoxProvider implements IPAMProvider {
 	@Override
 	ServiceResponse createHostRecord(NetworkPoolServer poolServer, NetworkPool networkPool, NetworkPoolIp networkPoolIp, NetworkDomain domain, Boolean createARecord, Boolean createPtrRecord) {
 		HttpApiClient client = new HttpApiClient();
-        HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
         InetAddressValidator inetAddressValidator = new InetAddressValidator()
+        
         def rpcConfig = getRpcConfig(poolServer)
-        def token
+        
+        HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
 
         try {
-            token = login(client,rpcConfig)
-            if (token.success) {
+            def tokenResults = login(client,rpcConfig)
+            def results = []
+            if (tokenResults.success) {
+                def hostname = networkPoolIp.hostname
+                def token = tokenResults.token.toString()
+                requestOptions.headers = [Authorization: "Token ${token}".toString()]
+                
                 if(domain && hostname && !hostname.endsWith(domain.name))  {
                     hostname = "${hostname}.${domain.name}"
                 }
@@ -372,15 +372,28 @@ class NetBoxProvider implements IPAMProvider {
 
                     requestOptions.queryParams = ['address':networkPoolIp.ipAddress]
                     // Check IP Usage
-                    def results = client.callJsonApi(apiUrl,apiPath,requestOptions,'GET')
+                    results = client.callJsonApi(apiUrl,apiPath,requestOptions,'GET')
 
                     if (results?.success && !results?.error) {
-                        if (!results?.data.results || results?.data.results.status == 'reserved') {
-                            def externalId = results.data.results.id
-                            requestOptions.queryParams = null
-                            requestOptions.body = JsonOutput.toJson([''])
+                        log.info("zzzresults2: ${results}")
+                        if (!results?.data.results) {
+                            // If Empty, Create the IP
+                            apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
+                            requestOptions.queryParams = ['address':networkPoolIp.ipAddress]
+                            requestOptions.body = JsonOutput.toJson(['address':networkPoolIp.ipAddress,'status':'reserved',"dns_name":hostname])
 
-                            results = client.callJsonApi(apiUrl,apiPath,requestOptions,'GET')
+                            results = client.callJsonApi(apiUrl,apiPath,requestOptions,'POST')
+
+                            log.info("zzzresults: ${results}")
+
+                        } else if (results?.data?.results){
+                            // If Reserved
+                            def externalId = results.data.results.id
+                            apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath + externalId + '/'
+                            requestOptions.queryParams = [:]
+                            requestOptions.body = JsonOutput.toJson(['address':networkPoolIp.ipAddress,'status':'reserved',"dns_name":hostname])
+
+                            results = client.callJsonApi(apiUrl,apiPath,requestOptions,'PUT')
                         } else {
                             log.error("Allocate IP Error: ${e}", e)
                         }
@@ -389,15 +402,27 @@ class NetBoxProvider implements IPAMProvider {
                     }
                 } else {
                     // Grab next available IP
+                    apiPath = getServicePath(rpcConfig.serviceUrl) + networksPath
+                    requestOptions.queryParams = [:]
+                    requestOptions.body = JsonOutput.toJson(['status':'reserved',"dns_name":hostname])
+
+                    results = client.callJsonApi(apiUrl,apiPath + networkPool.externalId + '/available-ips/',requestOptions,'POST')
+                }
+
+                if (results.success && !results.error) {
+                    log.info("zzzresults1: ${results}")
+                    networkPoolIp.externalId = results.data.id
+                    networkPoolIp.ipAddress = results.data.address.tokenize('/')[0]
                 }
             }
         } catch(e) {
-            log.error("Allocate IP Error: ${e}", e)
+            log.warn("API Call Failed to allocate IP Address {}",e)
+            return ServiceResponse.error("API Call Failed to allocate IP Address",null,networkPoolIp)
         }
-        return rtn
+        return ServiceResponse.success(networkPoolIp)
 	}
 
-	@Override // FIXME: This method signature is different than infobloxnps
+	@Override
 	ServiceResponse updateHostRecord(NetworkPoolServer poolServer, NetworkPool networkPool, NetworkPoolIp networkPoolIp) {
 		HttpApiClient client = new HttpApiClient()
 	}
