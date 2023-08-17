@@ -341,6 +341,7 @@ class NetBoxProvider implements IPAMProvider {
         InetAddressValidator inetAddressValidator = new InetAddressValidator()
         
         def rpcConfig = getRpcConfig(poolServer)
+        def token
         
         HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
 
@@ -349,7 +350,7 @@ class NetBoxProvider implements IPAMProvider {
             def results = []
             if (tokenResults.success) {
                 def hostname = networkPoolIp.hostname
-                def token = tokenResults.token.toString()
+                token = tokenResults.token.toString()
                 requestOptions.headers = [Authorization: "Token ${token}".toString()]
                 
                 if(domain && hostname && !hostname.endsWith(domain.name))  {
@@ -375,16 +376,13 @@ class NetBoxProvider implements IPAMProvider {
                     results = client.callJsonApi(apiUrl,apiPath,requestOptions,'GET')
 
                     if (results?.success && !results?.error) {
-                        log.info("zzzresults2: ${results}")
                         if (!results?.data.results) {
                             // If Empty, Create the IP
                             apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
-                            requestOptions.queryParams = ['address':networkPoolIp.ipAddress]
-                            requestOptions.body = JsonOutput.toJson(['address':networkPoolIp.ipAddress,'status':'reserved',"dns_name":hostname])
+                            requestOptions.queryParams = [:]
+                            requestOptions.body = JsonOutput.toJson(['address':networkPoolIp.ipAddress + '/' + networkPool.cidr.tokenize('/')[1],'status':'reserved',"dns_name":hostname])
 
                             results = client.callJsonApi(apiUrl,apiPath,requestOptions,'POST')
-
-                            log.info("zzzresults: ${results}")
 
                         } else if (results?.data?.results){
                             // If Reserved
@@ -415,21 +413,102 @@ class NetBoxProvider implements IPAMProvider {
                     networkPoolIp.ipAddress = results.data.address.tokenize('/')[0]
                 }
             }
+
+            return ServiceResponse.success(networkPoolIp)
         } catch(e) {
             log.warn("API Call Failed to allocate IP Address {}",e)
             return ServiceResponse.error("API Call Failed to allocate IP Address",null,networkPoolIp)
+        } finally {
+            if(tokenResults?.success) {
+                logout(client,rpcConfig,token)
+            }
+            client.shutdownClient()
         }
-        return ServiceResponse.success(networkPoolIp)
 	}
 
 	@Override
 	ServiceResponse updateHostRecord(NetworkPoolServer poolServer, NetworkPool networkPool, NetworkPoolIp networkPoolIp) {
-		HttpApiClient client = new HttpApiClient()
+		HttpApiClient client = new HttpApiClient();
+        def rpcConfig = getRpcConfig(poolServer)
+        HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
+        def token
+
+        try {
+            def tokenResults = login(client,rpcConfig)
+            def results = []
+            def hostname = networkPoolIp.hostname
+
+            if (tokenResults?.success) {
+                token = tokenResults?.token.toString()
+                requestOptions.headers = [Authorization: "Token ${token}".toString()]
+                def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
+                def apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
+                def externalId = networkPoolIp.externalId.toString() + '/'
+
+                requestOptions.body = JsonOutput.toJson(['address':networkPoolIp.ipAddress + '/' + networkPool.cidr.tokenize('/')[1],"dns_name":hostname])
+
+                results = client.callJsonApi(apiUrl,apiPath + externalId,null,null,requestOptions,'PUT')
+
+                if (results?.success) {
+                    return ServiceResponse.success(networkPoolIp)
+                } else {
+				    return ServiceResponse.error(results.error ?: 'Error Updating Host Record', null, networkPoolIp)
+			}
+            } else {
+                return ServiceResponse.error("Error Authenticating with NetBox",null,networkPoolIp)
+            }
+        } catch(ex) {
+            log.error("Error Updating Host Record {}",ex.message,ex)
+            return ServiceResponse.error("Error Updating Host Record ${ex.message}",null,networkPoolIp)
+        } finally {
+            if(token) {
+                logout(client,rpcConfig,token)
+            }
+            client.shutdownClient()
+        }
 	}
 
-//	@Override
-	ServiceResponse deleteHostRecord(NetworkPool networkPool, NetworkPoolIp poolIp, Boolean deleteAssociatedRecords) {
+	@Override
+	ServiceResponse deleteHostRecord(NetworkPool networkPool, NetworkPoolIp poolIp, Boolean deleteAssociatedRecords ) {
 		HttpApiClient client = new HttpApiClient();
+        def poolServer = morpheus.network.getPoolServerById(networkPool.poolServer.id).blockingGet()
+        def rpcConfig = getRpcConfig(poolServer)
+        HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
+        def token
+
+        try {
+            def tokenResults = login(client,rpcConfig)
+            def results = []
+            if (tokenResults?.success) {
+                token = tokenResults.token.toString()
+                requestOptions.headers = [Authorization: "Token ${token}".toString()]
+                def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
+                def apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
+                def externalId = poolIp.externalId.toString() + '/'
+
+                results = client.callJsonApi(apiUrl,apiPath + externalId,null,null,requestOptions,'DELETE')
+
+                if(!results?.success && results?.data?.detail == 'Not found.') {
+                    return ServiceResponse.success(poolIp)
+                } else if (results?.success && !results?.error) {
+                    return ServiceResponse.success(poolIp)
+                } else {
+                    log.error("Error Deleting Host Record ${poolIp}")
+                    return ServiceResponse.error("Error Deleting Host Record ${poolIp}")
+                }
+            } else {
+                log.error("Error Authenticating with NetBox")
+                return ServiceResponse.error("Error Authenticating with NetBox",null,poolIp)
+            }
+        } catch(x) {
+            log.error("Error Deleting Host Record {}",x.message,x)
+            return ServiceResponse.error("Error Deleting Host Record ${x.message}",null,poolIp)
+        } finally {
+            if(token) {
+                logout(client,rpcConfig,token)
+            }
+            client.shutdownClient()
+        }
 	}
 
 	private ServiceResponse listNetworks(HttpApiClient client, String token, NetworkPoolServer poolServer, Map opts = [:]) {
