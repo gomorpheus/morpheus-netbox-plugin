@@ -271,6 +271,11 @@ class NetBoxProvider implements IPAMProvider {
 	}
 
 	void addMissingPools(NetworkPoolServer poolServer, Collection<Map> chunkedAddList) {
+        HttpApiClient client = new HttpApiClient();
+        HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
+        def rpcConfig = getRpcConfig(poolServer)
+        def tokenResults = login(client,rpcConfig)
+        def token
 		def poolType = new NetworkPoolType(code: 'netbox')
 		def poolTypeIpv6 = new NetworkPoolType(code: 'netboxipv6')
 		List<NetworkPool> missingPoolsList = []
@@ -282,10 +287,28 @@ class NetBoxProvider implements IPAMProvider {
             def size = it.size
 			def rangeConfig
             def addRange
+            def limit = -1
+            def count = it.size
+
+            if (tokenResults?.success) {
+                token = tokenResults.token.toString()
+                requestOptions.headers = [Authorization: "Token ${token}".toString()]
+                requestOptions.queryParams = [limit:limit.toString()]
+                def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
+                def apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
+                def externalId = it.id.toString() + '/available-ips/'
+
+                def results = client.callJsonApi(apiUrl,apiPath + externalId,null,null,requestOptions,'GET')
+
+                if (results.success) {
+                    count = JsonSlurper().parseText(results.data).size()
+                }
+            }
+
 			if(it.family.value == 4) {
                 def addConfig = [account:poolServer.account, poolServer:poolServer, owner:poolServer.account, name:it.display, externalId:"${it.id}",
                                  cidr: startAddress, type: poolType, poolEnabled:true, parentType:'NetworkPoolServer', parentId:poolServer.id,
-                                 ipFreeCount: size,ipCount: size]
+                                 ipFreeCount: count,ipCount: size]
                 newNetworkPool = new NetworkPool(addConfig)
                 newNetworkPool.ipRanges = []
                 rangeConfig = [startAddress:startAddress, endAddress:endAddress, addressCount:size]
@@ -295,7 +318,7 @@ class NetBoxProvider implements IPAMProvider {
             if(it.family.value == 6) {
 				def addConfig = [account:poolServer.account, poolServer:poolServer, owner:poolServer.account, name:it.display, externalId:"${it.id}",
                                  cidr: startAddress, type: poolTypeIpv6, poolEnabled:true, parentType:'NetworkPoolServer', parentId:poolServer.id,
-                                 ipFreeCount: size,ipCount: size]
+                                 ipFreeCount: count,ipCount: size]
                 newNetworkPool = new NetworkPool(addConfig)
                 newNetworkPool.ipRanges = []
                 rangeConfig = [cidrIPv6: it.start_address, startIPv6Address: startAddress, endIPv6Address: endAddress,addressCount:size]
@@ -308,10 +331,33 @@ class NetBoxProvider implements IPAMProvider {
 	}
 
 	void updateMatchedPools(NetworkPoolServer poolServer, List<SyncTask.UpdateItem<NetworkPool,Map>> chunkedUpdateList) {
+        HttpApiClient client = new HttpApiClient();
+        HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
+        def rpcConfig = getRpcConfig(poolServer)
+        def tokenResults = login(client,rpcConfig)
+        def token
 		List<NetworkPool> poolsToUpdate = []
 		chunkedUpdateList?.each { update ->
 			NetworkPool existingItem = update.existingItem
             Map network = update.masterItem
+            def limit = -1
+            def count = network.size
+
+            if (tokenResults?.success) {
+                token = tokenResults.token.toString()
+                requestOptions.headers = [Authorization: "Token ${token}".toString()]
+                requestOptions.queryParams = [limit:limit.toString()]
+                def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
+                def apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
+                def externalId = network.id.toString() + '/available-ips/'
+
+                def results = client.callJsonApi(apiUrl,apiPath + externalId,null,null,requestOptions,'GET')
+
+                if (results.success) {
+                    count = JsonSlurper().parseText(results.data).size()
+                }
+            }
+
 			if(existingItem) {
 				//update view ?
 				def save = false
@@ -323,6 +369,10 @@ class NetBoxProvider implements IPAMProvider {
 				}
 				if(existingItem?.cidr != networkIp) {
 					existingItem.cidr = networkIp
+					save = true
+				}
+                if(existingItem?.ipFreeCount != count) {
+					existingItem.ipFreeCount = count
 					save = true
 				}
                 if(save) {
@@ -574,9 +624,9 @@ class NetBoxProvider implements IPAMProvider {
                 Observable<NetworkPoolIpIdentityProjection> poolIps = morpheus.network.pool.poolIp.listIdentityProjections(pool.id)
                 SyncTask<NetworkPoolIpIdentityProjection, Map, NetworkPoolIp> syncTask = new SyncTask<NetworkPoolIpIdentityProjection, Map, NetworkPoolIp>(poolIps, apiItems)
                 return syncTask.addMatchFunction { NetworkPoolIpIdentityProjection ipObject, Map apiItem ->
-                    ipObject.externalId == apiItem?.id?.toString()
+                    ipObject.externalId == "${apiItem.id}"
                 }.addMatchFunction { NetworkPoolIpIdentityProjection domainObject, Map apiItem ->
-                    domainObject.ipAddress == apiItem?.address.tokenize('/')[0]
+                    domainObject.ipAddress == apiItem?.address?.tokenize('/')[0]
                 }.onDelete {removeItems ->
                     morpheus.network.pool.poolIp.remove(pool.id, removeItems).blockingGet()
                 }.onAdd { itemsToAdd ->
@@ -605,7 +655,6 @@ class NetBoxProvider implements IPAMProvider {
         List<NetworkPoolIp> poolIpsToAdd = addList?.collect { it ->
 			def ipAddress = it.address.tokenize('/')[0]
 			def types = it.status.value
-			def name = it.dns_name
 			def ipType = 'assigned'
 			if(types?.contains('reserved')) {
 				ipType = 'reserved'
@@ -615,7 +664,7 @@ class NetBoxProvider implements IPAMProvider {
 			if(!types) {
 				ipType = 'used'
 			}
-			def addConfig = [networkPool: pool, networkPoolRange: pool.ipRanges ? pool.ipRanges.first() : null, ipType: ipType, hostname: name, ipAddress: ipAddress, externalId:it.id]
+			def addConfig = [networkPool: pool, networkPoolRange: pool.ipRanges ? pool.ipRanges.first() : null, ipType: ipType, hostname: it.dns_name, ipAddress: ipAddress, externalId:it.id]
 			def newObj = new NetworkPoolIp(addConfig)
 			return newObj
 
@@ -670,41 +719,26 @@ class NetBoxProvider implements IPAMProvider {
         
         def rpcConfig = getRpcConfig(poolServer)
         def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
-        def apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
-        def hasMore = true
-        def attempt = 0
-        def count = 100
-        def start = 0
-
+        def apiPath = getServicePath(rpcConfig.serviceUrl) + networksPath + networkPool.externalId + '/available-ips/'
+        def count = -1
+ 
         log.debug("url: ${apiUrl} path: ${apiPath}")
-            
-        while(hasMore && attempt < 1000) {
-            attempt++
+
+        if (networkPool.type.code == 'netbox') {  
             HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
             requestOptions.headers = [Authorization: "Token ${token}".toString()]
-            requestOptions.queryParams = [limit:count.toString(),offset:start.toString()]
+            requestOptions.queryParams = [limit:count.toString()]
 
             def results = client.callJsonApi(apiUrl,apiPath,null,null,requestOptions,'GET')
 
             if(results?.success && results?.error != true) {
-                requestOptions.queryParams = [:]
                 rtn.success = true
                 if(results.data?.results?.size() > 0) {
                     
-                    rtn.data += results.data.results
-
-                    if(!results.data.next) {
-                        hasMore = false
-                    } else {
-                        start += count
-                    }
-     
-                } else {
-                    hasMore = false
+                    rtn.data = results.data.results
+    
                 }
             } else {
-                hasMore = false
-
                 if(!rtn.success) {
                     rtn.msg = results.error
                 }
