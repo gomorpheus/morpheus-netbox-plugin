@@ -393,11 +393,12 @@ class NetBoxProvider implements IPAMProvider {
         
         def rpcConfig = getRpcConfig(poolServer)
         def token
+        def tokenResults
         
         HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
 
         try {
-            def tokenResults = login(client,rpcConfig)
+            tokenResults = login(client,rpcConfig)
             def results = []
             if (tokenResults.success) {
                 def hostname = networkPoolIp.hostname
@@ -410,7 +411,17 @@ class NetBoxProvider implements IPAMProvider {
 
                 def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
                 def apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
+                def externalId
+                def newIpPath
                 
+                if (networkPool.type.code.contains('prefix')) {
+                    newIpPath = prefixesPath
+                } else {
+                    newIpPath = rangesPath
+                }
+
+                log.info("zzzNewPath: ${newIpPath}")
+
                 if(networkPoolIp.ipAddress) {
                     // Make sure it's a valid IP
                     if (inetAddressValidator.isValidInet4Address(networkPoolIp.ipAddress)) {
@@ -422,7 +433,7 @@ class NetBoxProvider implements IPAMProvider {
                         return ServiceResponse.error("Invalid IP Address Requested: ${networkPoolIp.ipAddress}")
                     }
 
-                    requestOptions.queryParams = ['address':networkPoolIp.ipAddress]
+                    requestOptions.queryParams = ['address':networkPoolIp.ipAddress + '/' + networkPool.cidr.tokenize('/')[1]]
                     // Check IP Usage
                     results = client.callJsonApi(apiUrl,apiPath,requestOptions,'GET')
 
@@ -437,7 +448,7 @@ class NetBoxProvider implements IPAMProvider {
 
                         } else if (results?.data?.results){
                             // If Reserved
-                            def externalId = results.data.results.id
+                            externalId = results.data.results.id
                             apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath + externalId + '/'
                             requestOptions.queryParams = [:]
                             requestOptions.body = JsonOutput.toJson(['address':networkPoolIp.ipAddress,'status':'reserved',"dns_name":hostname])
@@ -451,11 +462,19 @@ class NetBoxProvider implements IPAMProvider {
                     }
                 } else {
                     // Grab next available IP
-                    apiPath = getServicePath(rpcConfig.serviceUrl) + rangesPath
+                    apiPath = getServicePath(rpcConfig.serviceUrl) + newIpPath
                     requestOptions.queryParams = [:]
-                    requestOptions.body = JsonOutput.toJson(['status':'reserved',"dns_name":hostname])
-
+                    requestOptions.body = null
                     results = client.callJsonApi(apiUrl,apiPath + networkPool.externalId + '/available-ips/',requestOptions,'POST')
+
+                    if(results.success && !results.error) {
+                        log.info("zzzTest: ${results}")
+                        externalId = results.data.id
+                        requestOptions.body = JsonOutput.toJson(['address':results.data.address,'status':'reserved',"dns_name":hostname])
+                        apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath + externalId + '/'
+                        
+                        results = client.callJsonApi(apiUrl,apiPath,requestOptions,'PUT')
+                    }
                 }
 
                 if (results.success && !results.error) {
