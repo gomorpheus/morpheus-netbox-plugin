@@ -60,12 +60,12 @@ jar {
 				'Plugin-Version': version,
 				'Morpheus-Name': 'NetBox',
 				'Morpheus-Organization': 'morpheus',
-				'Morpheus-Code': 'netbox-plugin',
+				'Morpheus-Code': 'morpheus-netbox-plugin',
 				'Morpheus-Description': 'Plugin for NetBox IPAM/DNS',
 				'Morpheus-Logo': 'assets/netbox.svg',
 				'Morpheus-Logo-Dark': 'assets/netbox.svg',
 				'Morpheus-Color': '#ffffff',
-				'Morpheus-Labels': 'Plugin, Networking, Network',
+				'Morpheus-Labels': 'plugin,networking,ipam',
 				'Morpheus-Repo': 'https://github.com/gomorpheus/morpheus-netbox-plugin',
 				'Morpheus-Min-Appliance-Version': minversion
 		)
