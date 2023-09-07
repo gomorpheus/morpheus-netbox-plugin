@@ -30,6 +30,7 @@ import io.reactivex.schedulers.Schedulers
 import org.apache.http.entity.ContentType
 import io.reactivex.Observable
 import org.apache.commons.validator.routines.InetAddressValidator
+import java.net.InetAddress
 
 @Slf4j
 class NetBoxProvider implements IPAMProvider {
@@ -252,7 +253,7 @@ class NetBoxProvider implements IPAMProvider {
 			Observable<NetworkPoolIdentityProjection> poolRecords = morpheus.network.pool.listIdentityProjections(poolServer.id)
 			SyncTask<NetworkPoolIdentityProjection,Map,NetworkPool> syncTask = new SyncTask(poolRecords, apiItems as Collection<Map>)
 			syncTask.addMatchFunction { NetworkPoolIdentityProjection domainObject, Map apiItem ->
-				domainObject.externalId == "${apiItem.id}"
+				domainObject.externalId == "${apiItem.id}" && ((apiItem.prefix && ["netboxprefix","netboxprefixipv6"].contains(domainObject.typeCode)) || (!apiItem.prefix && ["netbox","netboxipv6"].contains(domainObject.typeCode)) )
 			}.onDelete {removeItems ->
 				morpheus.network.pool.remove(poolServer.id, removeItems).blockingGet()
 			}.onAdd { itemsToAdd ->
@@ -287,11 +288,10 @@ class NetBoxProvider implements IPAMProvider {
             def addRange
             def poolType
 
-            log.info("zzzcidr: ${cidr} and zzzstartAddress: ${startAddress}")
+            log.debug("CIDR: ${cidr} and startAddress: ${startAddress}")
 
 			if(it.family.value == 4) {
                 if(it.prefix) {
-                    log.info("zzz1: ${it.toString()}")
                     poolType = new NetworkPoolType(code: 'netboxprefix')
                     def networkInfo = getNetworkPoolConfig(it.prefix)
                     def addConfig = [account:poolServer.account, poolServer:poolServer, owner:poolServer.account, name:it.display, externalId:"${it.id}",
@@ -305,7 +305,6 @@ class NetBoxProvider implements IPAMProvider {
                         newNetworkPool.ipRanges.add(addRange)
                     }
                 } else {
-                    log.info("zzz2: ${it.toString()}")
                     poolType = new NetworkPoolType(code: 'netbox')
                     def addConfig = [account:poolServer.account, poolServer:poolServer, owner:poolServer.account, name:it.display, externalId:"${it.id}",
                                     cidr: cidr, type: poolType, poolEnabled:true, parentType:'NetworkPoolServer', parentId:poolServer.id,ipCount: size]
@@ -326,8 +325,6 @@ class NetBoxProvider implements IPAMProvider {
                 } else {
                     poolType = new NetworkPoolType(code: 'netboxipv6')
                 }
-
-                log.info("zzz3: ${it.toString()}")
                 
                 def addConfig = [account:poolServer.account, poolServer:poolServer, owner:poolServer.account, name:it.display, externalId:"${it.id}",
                                 cidr: cidr, type: poolType, poolEnabled:true, parentType:'NetworkPoolServer', parentId:poolServer.id,ipCount: size]
@@ -429,8 +426,6 @@ class NetBoxProvider implements IPAMProvider {
                     requestOptions.queryParams = ['address':networkPoolIp.ipAddress + '/' + networkPool.cidr.tokenize('/')[1]]
                     // Check IP Usage
                     results = client.callJsonApi(apiUrl,apiPath,requestOptions,'GET')
-
-                    log.info("zzzcidr: ${networkPoolIp.ipAddress + '/' + networkPool.cidr.tokenize('/')[1]}")
 
                     if (results?.success && !results?.error) {
                         if (!results?.data.results) {
@@ -665,7 +660,7 @@ class NetBoxProvider implements IPAMProvider {
                 return syncTask.addMatchFunction { NetworkPoolIpIdentityProjection domainObject, Map apiItem ->
                     domainObject.externalId == "${apiItem.id}"
                 }.addMatchFunction { NetworkPoolIpIdentityProjection domainObject, Map apiItem ->
-                    domainObject.ipAddress == apiItem?.address?.tokenize('/')[0]
+                    domainObject.ipAddress == apiItem.address.tokenize('/')[0]
                 }.onDelete {removeItems ->
                     morpheus.network.pool.poolIp.remove(pool.id, removeItems).blockingGet()
                 }.onAdd { itemsToAdd ->
@@ -695,7 +690,7 @@ class NetBoxProvider implements IPAMProvider {
 			def ipAddress = it.address.tokenize('/')[0]
 			def types = it.status.value
 			def ipType = 'assigned'
-			if(types == 'active') {
+			if(types == 'active' || types == 'reserved') {
 				ipType = 'reserved'
 			} else if (types == 'deprecated') {
                 ipType = 'unmanaged'
@@ -719,7 +714,7 @@ class NetBoxProvider implements IPAMProvider {
 				def hostname = update.masterItem.dns_name
                 def types = update.masterItem.status.value
 				def ipType = 'assigned'
-                if(types == 'active') {
+                if(types == 'active' || types == 'reserved') {
                     ipType = 'reserved'
                 } else if (types == 'deprecated') {
                     ipType = 'unmanaged'
@@ -753,6 +748,8 @@ class NetBoxProvider implements IPAMProvider {
             HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
             requestOptions.headers = [Authorization: "Token ${token}".toString()]
 
+            def startAddress = networkPool?.ipRanges?[0].startAddress ?: null
+            def endAddress = networkPool?.ipRanges?[0].endAddress ?: null
             def hasMore = true
             def attempt = 0
             def start = 0
@@ -766,15 +763,20 @@ class NetBoxProvider implements IPAMProvider {
                 while(hasMore && attempt < 1000) {
                     attempt++
 
-                    requestOptions.queryParams = [limit:maxResults.toString(),offset:start.toString(),'parent':networkPool.cidr]
+                    requestOptions.queryParams = [limit:maxResults.toString(),offset:start.toString(),'parent':networkPool.cidr.toString()]
                     def results = client.callJsonApi(apiUrl,apiPath,null,null,requestOptions,'GET')
 
                     if(results?.success && results?.error != true) {
 
                         rtn.success = true
                         if(results.data?.results?.size() > 0) {
-                            
-                            rtn.data += results.data.results
+                            results.data.results.each { it ->
+                                if (!startAddress || !endAddress) {
+                                    rtn.data += it
+                                } else if (isIPInRange(it.address.tokenize('/')[0],startAddress,endAddress)) {
+                                    rtn.data += it
+                                }
+                            }
 
                             if(!results.data.next) {
                                 hasMore = false
@@ -794,7 +796,7 @@ class NetBoxProvider implements IPAMProvider {
                     }
                 }
             } else {
-                requestOptions.queryParams = [limit:maxResults.toString(),offset:start.toString(),'parent':networkPool.cidr]
+                requestOptions.queryParams = [limit:maxResults.toString(),offset:start.toString(),'parent':networkPool.cidr.toString()]
                 def results = client.callJsonApi(apiUrl,apiPath,null,null,requestOptions,'GET')
 
                 if(results?.success && results?.error != true) {
@@ -954,5 +956,34 @@ class NetBoxProvider implements IPAMProvider {
             log.warn("error parsing network pool cidr: ${e}", e)
         }
         return rtn
+    }
+
+    def isIPInRange(ipAddress, startRange, endRange) {
+        try {
+            def start = InetAddress.getByName(startRange)
+            def end = InetAddress.getByName(endRange)
+            def ip = InetAddress.getByName(ipAddress)
+
+            // Check for IPv4 or IPv6
+            if (ip instanceof Inet4Address && start instanceof Inet4Address && end instanceof Inet4Address) {
+                // IPv4
+                def ipInt = (ip.getAddress()[0] << 24) | (ip.getAddress()[1] << 16) | (ip.getAddress()[2] << 8) | ip.getAddress()[3]
+                def startInt = (start.getAddress()[0] << 24) | (start.getAddress()[1] << 16) | (start.getAddress()[2] << 8) | start.getAddress()[3]
+                def endInt = (end.getAddress()[0] << 24) | (end.getAddress()[1] << 16) | (end.getAddress()[2] << 8) | end.getAddress()[3]
+                return ipInt >= startInt && ipInt <= endInt
+            } else if (ip instanceof Inet6Address && start instanceof Inet6Address && end instanceof Inet6Address) {
+                // IPv6
+                def ipBytes = ip.getAddress()
+                def startBytes = start.getAddress()
+                def endBytes = end.getAddress()
+                return ipBytes >= startBytes && ipBytes <= endBytes
+            } else {
+                // Invalid IP version
+                return false
+            }
+        } catch (e) {
+            // Handle invalid IP address
+            log.error("cacheIpAddress  error: ${e}", e)
+        }
     }
 }
