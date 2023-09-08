@@ -964,12 +964,18 @@ class NetBoxProvider implements IPAMProvider {
             def end = InetAddress.getByName(endRange)
             def ip = InetAddress.getByName(ipAddress)
 
+            log.debug("StartIP: ${start}, endAddress: ${end}, ip: ${ip}")
+
             // Check for IPv4 or IPv6
             if (ip instanceof Inet4Address && start instanceof Inet4Address && end instanceof Inet4Address) {
                 // IPv4
-                def ipInt = (ip.getAddress()[0] << 24) | (ip.getAddress()[1] << 16) | (ip.getAddress()[2] << 8) | ip.getAddress()[3]
-                def startInt = (start.getAddress()[0] << 24) | (start.getAddress()[1] << 16) | (start.getAddress()[2] << 8) | start.getAddress()[3]
-                def endInt = (end.getAddress()[0] << 24) | (end.getAddress()[1] << 16) | (end.getAddress()[2] << 8) | end.getAddress()[3]
+                // def ipInt = (ip.getAddress()[0] << 24) | (ip.getAddress()[1] << 16) | (ip.getAddress()[2] << 8) | ip.getAddress()[3]
+                // def startInt = (start.getAddress()[0] << 24) | (start.getAddress()[1] << 16) | (start.getAddress()[2] << 8) | start.getAddress()[3]
+                // def endInt = (end.getAddress()[0] << 24) | (end.getAddress()[1] << 16) | (end.getAddress()[2] << 8) | end.getAddress()[3]
+                def ipInt = ipv4ToInteger(ip.toString())
+                def endInt = ipv4ToInteger(end.toString())
+                def startInt = ipv4ToInteger(start.toString())
+                log.debug("startInt: ${startInt}, endInt: ${endInt}, ipInt: ${ipInt}")
                 return ipInt >= startInt && ipInt <= endInt
             } else if (ip instanceof Inet6Address && start instanceof Inet6Address && end instanceof Inet6Address) {
                 // IPv6
@@ -985,5 +991,20 @@ class NetBoxProvider implements IPAMProvider {
             // Handle invalid IP address
             log.error("cacheIpAddress  error: ${e}", e)
         }
+    }
+
+    def ipv4ToInteger(ipAddress) {
+        if (ipAddress.startsWith("/")) {
+            ipAddress = ipAddress.substring(1)
+        }
+        def parts = ipAddress.split('\\.') // Split the IP address into octets
+
+        def result = 0
+            for (int i = 0; i < 4; i++) {
+                def octet = parts[i].toInteger()
+                result = (result << 8) | octet
+            }
+
+        return result
     }
 }
