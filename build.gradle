@@ -61,7 +61,7 @@ jar {
 				'Morpheus-Name': 'NetBox',
 				'Morpheus-Organization': 'morpheus',
 				'Morpheus-Code': 'morpheus-netbox-plugin',
-				'Morpheus-Description': 'Plugin for NetBox IPAM/DNS',
+				'Morpheus-Description': 'Plugin for NetBox IPAM',
 				'Morpheus-Logo': 'assets/netbox.svg',
 				'Morpheus-Logo-Dark': 'assets/netbox.svg',
 				'Morpheus-Color': '#ffffff',
