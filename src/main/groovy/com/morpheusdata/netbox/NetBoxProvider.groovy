@@ -40,6 +40,7 @@ class NetBoxProvider implements IPAMProvider {
     static String prefixesPath = 'api/ipam/prefixes/'
     static String getIpsPath = 'api/ipam/ip-addresses/'
     static String authPath = 'api/users/tokens/provision/'
+    static String tagsPath = 'api/extras/tags/'
 
 	static String LOCK_NAME = 'netbox.ipam'
 	private java.lang.Object maxResults
@@ -405,6 +406,11 @@ class NetBoxProvider implements IPAMProvider {
                 def apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
                 def externalId
                 def newIpPath
+                def tags
+
+                if(poolServer.configMap?.tags) {
+                    tags = new JsonSlurper().parseText(addTags(poolServer.configMap?.tags))
+				}
                 
                 if (networkPool.type.code.contains('prefix')) {
                     newIpPath = prefixesPath
@@ -432,7 +438,7 @@ class NetBoxProvider implements IPAMProvider {
                             // If Empty, Create the IP
                             apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
                             requestOptions.queryParams = [:]
-                            requestOptions.body = JsonOutput.toJson(['address':networkPoolIp.ipAddress + '/' + networkPool.cidr.tokenize('/')[1],'status':'reserved',"dns_name":hostname])
+                            requestOptions.body = JsonOutput.toJson(['address':networkPoolIp.ipAddress + '/' + networkPool.cidr.tokenize('/')[1],'status':'reserved',"dns_name":hostname,'tags':tags ?: []])
 
                             results = client.callJsonApi(apiUrl,apiPath,requestOptions,'POST')
 
@@ -441,7 +447,7 @@ class NetBoxProvider implements IPAMProvider {
                             externalId = results.data.results.id
                             apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath + externalId + '/'
                             requestOptions.queryParams = [:]
-                            requestOptions.body = JsonOutput.toJson(['address':networkPoolIp.ipAddress + '/' + networkPool.cidr.tokenize('/')[1],'status':'reserved',"dns_name":hostname])
+                            requestOptions.body = JsonOutput.toJson(['address':networkPoolIp.ipAddress + '/' + networkPool.cidr.tokenize('/')[1],'status':'reserved',"dns_name":hostname,'tags':tags ?: []])
 
                             results = client.callJsonApi(apiUrl,apiPath,requestOptions,'PUT')
                         } else {
@@ -459,7 +465,7 @@ class NetBoxProvider implements IPAMProvider {
 
                     if(results.success && !results.error) {
                         externalId = results.data.id
-                        requestOptions.body = JsonOutput.toJson(['address':results.data.address,'status':'reserved',"dns_name":hostname])
+                        requestOptions.body = JsonOutput.toJson(['address':results.data.address,'status':'reserved',"dns_name":hostname,'tags':tags ?: []])
                         apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath + externalId + '/'
                         
                         results = client.callJsonApi(apiUrl,apiPath,requestOptions,'PUT')
@@ -771,10 +777,12 @@ class NetBoxProvider implements IPAMProvider {
                         rtn.success = true
                         if(results.data?.results?.size() > 0) {
                             results.data.results.each { it ->
-                                if (!startAddress || !endAddress) {
-                                    rtn.data += it
-                                } else if (isIPInRange(it.address.tokenize('/')[0],startAddress,endAddress)) {
-                                    rtn.data += it
+                                if (networkPool.cidr.tokenize("/")[1] == it.address.tokenize('/')[1]) {
+                                    if (!startAddress || !endAddress) {
+                                        rtn.data += it
+                                    } else if (isIPInRange(it.address.tokenize('/')[0],startAddress,endAddress)) {
+                                        rtn.data += it
+                                    }
                                 }
                             }
 
@@ -872,7 +880,8 @@ class NetBoxProvider implements IPAMProvider {
 				new OptionType(code: 'netbox.servicePassword', name: 'Service Password', inputType: OptionType.InputType.PASSWORD, fieldName: 'servicePassword', fieldLabel: 'Password', fieldContext: 'domain', displayOrder: 3,localCredential: true, required: true),
 				new OptionType(code: 'netbox.throttleRate', name: 'Throttle Rate', inputType: OptionType.InputType.NUMBER, defaultValue: 0, fieldName: 'serviceThrottleRate', fieldLabel: 'Throttle Rate', fieldContext: 'domain', displayOrder: 4),
 				new OptionType(code: 'netbox.ignoreSsl', name: 'Ignore SSL', inputType: OptionType.InputType.CHECKBOX, defaultValue: 0, fieldName: 'ignoreSsl', fieldLabel: 'Disable SSL SNI Verification', fieldContext: 'domain', displayOrder: 5),
-				new OptionType(code: 'netbox.inventoryExisting', name: 'Inventory Existing', inputType: OptionType.InputType.CHECKBOX, defaultValue: 0, fieldName: 'inventoryExisting', fieldLabel: 'Inventory Existing', fieldContext: 'config', displayOrder: 6)
+				new OptionType(code: 'netbox.inventoryExisting', name: 'Inventory Existing', inputType: OptionType.InputType.CHECKBOX, defaultValue: 0, fieldName: 'inventoryExisting', fieldLabel: 'Inventory Existing', fieldContext: 'config', displayOrder: 6),
+                new OptionType(code: 'netbox.tags', name: 'Tags', inputType: OptionType.InputType.TEXT, fieldName: 'tags', fieldLabel: 'Tags', fieldContext: 'config', displayOrder: 8, helpText: "value|value2")
 		]
 	}
 
@@ -991,6 +1000,22 @@ class NetBoxProvider implements IPAMProvider {
             // Handle invalid IP address
             log.error("cacheIpAddress  error: ${e}", e)
         }
+    }
+
+    def addTags(String tags) {
+        // Split the string into individual values using '|'
+        def tagValues = tags.split("\\|")
+
+        // Create a list of JSON objects
+        def tagObjects = tagValues.collect { value ->
+            [
+                name: value
+            ]
+        }
+
+        def jsonTags = JsonOutput.toJson(tagObjects)
+
+        return jsonTags
     }
 
     def ipv4ToInteger(ipAddress) {
