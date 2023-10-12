@@ -23,12 +23,12 @@ import groovy.json.JsonSlurper
 import groovy.text.SimpleTemplateEngine
 import groovy.json.JsonOutput
 import groovy.util.logging.Slf4j
-import io.reactivex.Completable
-import io.reactivex.Single
+import io.reactivex.rxjava3.core.Completable
+import io.reactivex.rxjava3.core.Single
 import org.apache.commons.net.util.SubnetUtils
-import io.reactivex.schedulers.Schedulers
+import io.reactivex.rxjava3.core.Scheduler
 import org.apache.http.entity.ContentType
-import io.reactivex.Observable
+import io.reactivex.rxjava3.core.Observable
 import org.apache.commons.validator.routines.InetAddressValidator
 import java.net.InetAddress
 import java.util.Calendar
