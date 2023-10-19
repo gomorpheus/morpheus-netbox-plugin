@@ -236,9 +236,7 @@ class NetBoxProvider implements IPAMProvider {
 			if(testResults?.success) {
                 String token = tokenResults?.token as String
 				cacheNetworks(netboxClient,token,poolServer)
-                log.info("zzzinventoryExisting: ${poolServer?.configMap?.inventoryExisting}")
 				if(poolServer?.configMap?.inventoryExisting) {
-                    log.info("zzzCaching IP Addresses...")
 					cacheIpAddressRecords(netboxClient,token,poolServer)
 				}
 				log.info("Sync Completed in ${new Date().time - now.time}ms")
