@@ -26,7 +26,7 @@ import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Single
 import org.apache.commons.net.util.SubnetUtils
-import io.reactivex.rxjava3.core.Scheduler
+import import io.reactivex.rxjava3.schedulers.Schedulers
 import org.apache.http.entity.ContentType
 import io.reactivex.rxjava3.core.Observable
 import org.apache.commons.validator.routines.InetAddressValidator
@@ -213,9 +213,9 @@ class NetBoxProvider implements IPAMProvider {
 				    testResults = testNetworkPoolServer(netboxClient,tokenResults.token as String,poolServer) as ServiceResponse<Map>
                     if(!testResults.success) {
                         //NOTE invalidLogin was only ever set to false.
-                        morpheus.network.updateNetworkPoolServerStatus(poolServer, AccountIntegration.Status.error, 'Error calling NetBox').blockingGet()
+                        morpheus.network.updateNetworkPoolServerStatus(poolServer, AccountIntegration.Status.error, 'Error calling NetBox').subscribe().dispose()
                     } else {
-                        morpheus.network.updateNetworkPoolServerStatus(poolServer, AccountIntegration.Status.syncing).blockingGet()
+                        morpheus.network.updateNetworkPoolServerStatus(poolServer, AccountIntegration.Status.syncing).subscribe().dispose()
                     }
                 } else {
                     morpheus.network.updateNetworkPoolServerStatus(poolServer, AccountIntegration.Status.error, 'NetBox api not reachable')
