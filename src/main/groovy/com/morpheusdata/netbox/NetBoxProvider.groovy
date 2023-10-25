@@ -115,7 +115,7 @@ class NetBoxProvider implements IPAMProvider {
             if((!poolServer.credentialData?.password || poolServer.credentialData?.password == '')){
                 rtn.errors['servicePassword'] = 'Password is required'
             }
-        } else {
+        } else if(poolServer.credentialData.type == 'username-password') {
             if((!poolServer.serviceUsername || poolServer.serviceUsername == '') && (!poolServer.credentialData?.username || poolServer.credentialData?.username == '')){
                 rtn.errors['serviceUsername'] = 'Username is required'
             }
@@ -881,7 +881,8 @@ class NetBoxProvider implements IPAMProvider {
 	List<OptionType> getIntegrationOptionTypes() {
 		return [
 				new OptionType(code: 'netbox.serviceUrl', name: 'Service URL', inputType: OptionType.InputType.TEXT, fieldName: 'serviceUrl', fieldLabel: 'API Url', fieldContext: 'domain', placeHolder: 'https://x.x.x.x/', displayOrder: 0, required:true),
-				new OptionType(code: 'netbox.credentials', name: 'Credentials', inputType: OptionType.InputType.CREDENTIAL, fieldName: 'type', fieldLabel: 'Credentials', fieldContext: 'credential', required: true, displayOrder: 1, defaultValue: 'local', optionSource: 'credentials', config: '{"credentialTypes":["username-password","api-key"]}'),
+				new OptionType(code: 'netbox.credentials', name: 'Credentials', inputType: OptionType.InputType.CREDENTIAL, fieldName: 'type', fieldLabel: 'Credentials', fieldContext: 'credential', required: true, displayOrder: 1, defaultValue: 'local', optionSource: 'credentials',
+                    config: '{"credentialTypes":["username-password","api-key"]}', helpText: "Username + Password <or> Token Only if using Local Credentials"),
 
 				new OptionType(code: 'netbox.serviceUsername', name: 'Service Username', inputType: OptionType.InputType.TEXT, fieldName: 'serviceUsername', fieldLabel: 'Username', fieldContext: 'domain', displayOrder: 2,localCredential: true, required: false),
 				new OptionType(code: 'netbox.servicePassword', name: 'Service Password', inputType: OptionType.InputType.PASSWORD, fieldName: 'servicePassword', fieldLabel: 'Password', fieldContext: 'domain', displayOrder: 3,localCredential: true, required: false),
@@ -946,7 +947,7 @@ class NetBoxProvider implements IPAMProvider {
     private getRpcConfig(NetworkPoolServer poolServer) {
         return [
             username:poolServer.credentialData?.username ?: poolServer.serviceUsername,
-            password:poolServer.credentialData?.password ?: poolServer.apiToken ?: poolServer.servicePassword,
+            password:poolServer.credentialData?.password ?: poolServer.servicePassword ?: poolServer.configMap?.apiToken,
             serviceUrl:poolServer.serviceUrl,
             ignoreSSL:poolServer.ignoreSsl
         ]
