@@ -102,20 +102,28 @@ class NetBoxProvider implements IPAMProvider {
 	 */
 	@Override
 	ServiceResponse verifyNetworkPoolServer(NetworkPoolServer poolServer, Map opts) {
+		ServiceResponse verifyNetworkPoolServer(NetworkPoolServer poolServer, Map opts) {
 		ServiceResponse<NetworkPoolServer> rtn = ServiceResponse.error()
 		rtn.errors = [:]
+
         if(!poolServer.name || poolServer.name == ''){
             rtn.errors['name'] = 'Name is required'
         }
 		if(!poolServer.serviceUrl || poolServer.serviceUrl == ''){
 			rtn.errors['serviceUrl'] = 'NetBox API URL is required'
 		}
-		if((!poolServer.serviceUsername || poolServer.serviceUsername == '') && (!poolServer.credentialData?.username || poolServer.credentialData?.username == '')){
-			rtn.errors['serviceUsername'] = 'Username is required'
-		}
-		if((!poolServer.servicePassword || poolServer.servicePassword == '') && (!poolServer.credentialData?.password || poolServer.credentialData?.password == '')){
-			rtn.errors['servicePassword'] = 'Password is required'
-		}
+        if(poolServer.credentialData.type == 'api-key') {
+            if((!poolServer.credentialData?.password || poolServer.credentialData?.password == '')){
+                rtn.errors['servicePassword'] = 'Password is required'
+            }
+        } else if(poolServer.credentialData.type == 'username-password') {
+            if((!poolServer.serviceUsername || poolServer.serviceUsername == '') && (!poolServer.credentialData?.username || poolServer.credentialData?.username == '')){
+                rtn.errors['serviceUsername'] = 'Username is required'
+            }
+            if((!poolServer.servicePassword || poolServer.servicePassword == '') && (!poolServer.credentialData?.password || poolServer.credentialData?.password == '')){
+                rtn.errors['servicePassword'] = 'Password is required'
+            }
+        }
 
 		rtn.data = poolServer
 		if(rtn.errors.size() > 0){
@@ -345,8 +353,6 @@ class NetBoxProvider implements IPAMProvider {
         HttpApiClient client = new HttpApiClient();
         def rpcConfig = getRpcConfig(poolServer)
         HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
-        def tokenResults = login(client,rpcConfig)
-        def token
 		List<NetworkPool> poolsToUpdate = []
 		chunkedUpdateList?.each { update ->
 			NetworkPool existingItem = update.existingItem
@@ -875,14 +881,16 @@ class NetBoxProvider implements IPAMProvider {
 	List<OptionType> getIntegrationOptionTypes() {
 		return [
 				new OptionType(code: 'netbox.serviceUrl', name: 'Service URL', inputType: OptionType.InputType.TEXT, fieldName: 'serviceUrl', fieldLabel: 'API Url', fieldContext: 'domain', placeHolder: 'https://x.x.x.x/', displayOrder: 0, required:true),
-				new OptionType(code: 'netbox.credentials', name: 'Credentials', inputType: OptionType.InputType.CREDENTIAL, fieldName: 'type', fieldLabel: 'Credentials', fieldContext: 'credential', required: true, displayOrder: 1, defaultValue: 'local',optionSource: 'credentials',config: '{"credentialTypes":["username-password"]}'),
+				new OptionType(code: 'netbox.credentials', name: 'Credentials', inputType: OptionType.InputType.CREDENTIAL, fieldName: 'type', fieldLabel: 'Credentials', fieldContext: 'credential', required: true, displayOrder: 1, defaultValue: 'local', optionSource: 'credentials',
+                    config: '{"credentialTypes":["username-password","api-key"]}', helpText: "Username + Password <or> Token Only if using Local Credentials"),
 
-				new OptionType(code: 'netbox.serviceUsername', name: 'Service Username', inputType: OptionType.InputType.TEXT, fieldName: 'serviceUsername', fieldLabel: 'Username', fieldContext: 'domain', displayOrder: 2,localCredential: true, required: true),
-				new OptionType(code: 'netbox.servicePassword', name: 'Service Password', inputType: OptionType.InputType.PASSWORD, fieldName: 'servicePassword', fieldLabel: 'Password', fieldContext: 'domain', displayOrder: 3,localCredential: true, required: true),
-				new OptionType(code: 'netbox.throttleRate', name: 'Throttle Rate', inputType: OptionType.InputType.NUMBER, defaultValue: 0, fieldName: 'serviceThrottleRate', fieldLabel: 'Throttle Rate', fieldContext: 'domain', displayOrder: 4),
-				new OptionType(code: 'netbox.ignoreSsl', name: 'Ignore SSL', inputType: OptionType.InputType.CHECKBOX, defaultValue: 0, fieldName: 'ignoreSsl', fieldLabel: 'Disable SSL SNI Verification', fieldContext: 'domain', displayOrder: 5),
-				new OptionType(code: 'netbox.inventoryExisting', name: 'Inventory Existing', inputType: OptionType.InputType.CHECKBOX, defaultValue: 0, fieldName: 'inventoryExisting', fieldLabel: 'Inventory Existing', fieldContext: 'config', displayOrder: 6),
-                new OptionType(code: 'netbox.tags', name: 'Tags', inputType: OptionType.InputType.TEXT, fieldName: 'tags', fieldLabel: 'Tags', fieldContext: 'config', displayOrder: 8, helpText: "value|value2")
+				new OptionType(code: 'netbox.serviceUsername', name: 'Service Username', inputType: OptionType.InputType.TEXT, fieldName: 'serviceUsername', fieldLabel: 'Username', fieldContext: 'domain', displayOrder: 2,localCredential: true, required: false),
+				new OptionType(code: 'netbox.servicePassword', name: 'Service Password', inputType: OptionType.InputType.PASSWORD, fieldName: 'servicePassword', fieldLabel: 'Password', fieldContext: 'domain', displayOrder: 3,localCredential: true, required: false),
+                new OptionType(code: 'netbox.apiToken', name: 'API Token', inputType: OptionType.InputType.TEXT, fieldName: 'apiToken', fieldLabel: 'API Token', fieldContext: 'config', displayOrder: 4,localCredential: true),
+				new OptionType(code: 'netbox.throttleRate', name: 'Throttle Rate', inputType: OptionType.InputType.NUMBER, defaultValue: 0, fieldName: 'serviceThrottleRate', fieldLabel: 'Throttle Rate', fieldContext: 'domain', displayOrder: 5),
+				new OptionType(code: 'netbox.ignoreSsl', name: 'Ignore SSL', inputType: OptionType.InputType.CHECKBOX, defaultValue: 0, fieldName: 'ignoreSsl', fieldLabel: 'Disable SSL SNI Verification', fieldContext: 'domain', displayOrder: 6),
+				new OptionType(code: 'netbox.inventoryExisting', name: 'Inventory Existing', inputType: OptionType.InputType.CHECKBOX, defaultValue: 0, fieldName: 'inventoryExisting', fieldLabel: 'Inventory Existing', fieldContext: 'config', displayOrder: 7),
+                new OptionType(code: 'netbox.tags', name: 'Tags', inputType: OptionType.InputType.TEXT, fieldName: 'tags', fieldLabel: 'Tags', fieldContext: 'config', displayOrder: 9, helpText: "value|value2")
 		]
 	}
 
@@ -894,23 +902,31 @@ class NetBoxProvider implements IPAMProvider {
     def login(HttpApiClient client, rpcConfig) {
         def rtn = [success:false]
         def expiration = formatDate(getCurrentTimePlus5Minutes())
-        try {
-            HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
-            requestOptions.headers = ['content-type':'application/json']
-            requestOptions.body = JsonOutput.toJson([username:rpcConfig.username, password:rpcConfig.password, expires:expiration, description:'Generated by Morpheus'])
+        if(rpcConfig.username && rpcConfig.password) {
+            try {
+                HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
+                requestOptions.headers = ['content-type':'application/json']
+                requestOptions.body = JsonOutput.toJson([username:rpcConfig.username, password:rpcConfig.password, expires:expiration, description:'Generated by Morpheus'])
 
-            def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
-            def apiPath = getServicePath(rpcConfig.serviceUrl) + authPath
+                def apiUrl = cleanServiceUrl(rpcConfig.serviceUrl)
+                def apiPath = getServicePath(rpcConfig.serviceUrl) + authPath
 
-            def results = client.callJsonApi(apiUrl,apiPath,requestOptions,'POST')
-            if(results?.success && results?.error != true) {
-                log.debug("login: ${results}")
-                rtn.token = results.data?.key?.trim()
-                rtn.success = true
-            } else {
-                //error
+                def results = client.callJsonApi(apiUrl,apiPath,requestOptions,'POST')
+                if(results?.success && results?.error != true) {
+                    log.debug("login: ${results}")
+                    rtn.token = results.data?.key?.trim()
+                    rtn.success = true
+                } else {
+                    //error
+                    log.error("getToken error: ${e}", e)
+                }
+            } catch(e) {
+                log.error("getToken error: ${e}", e)
             }
-        } catch(e) {
+        } else if (rpcConfig.password && !rpcConfig.username) {
+            rtn.token = rpcConfig.password.toString()
+            rtn.success = true
+        } else {
             log.error("getToken error: ${e}", e)
         }
         return rtn
@@ -931,9 +947,9 @@ class NetBoxProvider implements IPAMProvider {
     private getRpcConfig(NetworkPoolServer poolServer) {
         return [
             username:poolServer.credentialData?.username ?: poolServer.serviceUsername,
-            password:poolServer.credentialData?.password ?: poolServer.servicePassword,
+            password:poolServer.credentialData?.password ?: poolServer.servicePassword ?: poolServer.configMap?.apiToken,
             serviceUrl:poolServer.serviceUrl,
-            ignoreSSL: poolServer.ignoreSsl
+            ignoreSSL:poolServer.ignoreSsl
         ]
     }
 
