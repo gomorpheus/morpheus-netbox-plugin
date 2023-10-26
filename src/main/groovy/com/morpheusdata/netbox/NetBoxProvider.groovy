@@ -102,7 +102,6 @@ class NetBoxProvider implements IPAMProvider {
 	 */
 	@Override
 	ServiceResponse verifyNetworkPoolServer(NetworkPoolServer poolServer, Map opts) {
-		ServiceResponse verifyNetworkPoolServer(NetworkPoolServer poolServer, Map opts) {
 		ServiceResponse<NetworkPoolServer> rtn = ServiceResponse.error()
 		rtn.errors = [:]
 
@@ -124,6 +123,7 @@ class NetBoxProvider implements IPAMProvider {
                 rtn.errors['servicePassword'] = 'Password is required'
             }
         }
+		
 
 		rtn.data = poolServer
 		if(rtn.errors.size() > 0){
