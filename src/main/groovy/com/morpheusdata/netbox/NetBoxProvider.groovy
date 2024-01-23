@@ -527,7 +527,7 @@ class NetBoxProvider implements IPAMProvider {
                     return ServiceResponse.success(networkPoolIp)
                 } else {
 				    return ServiceResponse.error(results.error ?: 'Error Updating Host Record', null, networkPoolIp)
-			}
+			    }
             } else {
                 return ServiceResponse.error("Error Authenticating with NetBox",null,networkPoolIp)
             }
@@ -560,15 +560,27 @@ class NetBoxProvider implements IPAMProvider {
                 def apiPath = getServicePath(rpcConfig.serviceUrl) + getIpsPath
                 def externalId = poolIp.externalId.toString() + '/'
 
-                results = client.callJsonApi(apiUrl,apiPath + externalId,null,null,requestOptions,'DELETE')
+                if(poolServer?.configMap?.deprecate){
+                    requestOptions.body = JsonOutput.toJson(['address':poolIp.ipAddress + '/' + networkPool.cidr.tokenize('/')[1],"status":"deprecated"])
 
-                if(!results?.success && results?.data?.detail == 'Not found.') {
-                    return ServiceResponse.success(poolIp)
-                } else if (results?.success && !results?.error) {
-                    return ServiceResponse.success(poolIp)
+                    results = client.callJsonApi(apiUrl,apiPath + externalId,null,null,requestOptions,'PUT')
+
+                    if (results?.success) {
+                        return ServiceResponse.success(poolIp)
+                    } else {
+                        return ServiceResponse.error(results.error ?: 'Error Updating Host Record', null, poolIp)
+                    }
                 } else {
-                    log.error("Error Deleting Host Record ${poolIp}")
-                    return ServiceResponse.error("Error Deleting Host Record ${poolIp}")
+                    results = client.callJsonApi(apiUrl,apiPath + externalId,null,null,requestOptions,'DELETE')
+
+                    if(!results?.success && results?.data?.detail == 'Not found.') {
+                        return ServiceResponse.success(poolIp)
+                    } else if (results?.success && !results?.error) {
+                        return ServiceResponse.success(poolIp)
+                    } else {
+                        log.error("Error Deleting Host Record ${poolIp}")
+                        return ServiceResponse.error("Error Deleting Host Record ${poolIp}")
+                    }
                 }
             } else {
                 log.error("Error Authenticating with NetBox")
@@ -703,7 +715,7 @@ class NetBoxProvider implements IPAMProvider {
 			def ipAddress = it.address.tokenize('/')[0]
 			def types = it.status.value
 			def ipType = 'assigned'
-			if(types == 'active' || types == 'reserved') {
+			if(types == 'reserved') {
 				ipType = 'reserved'
 			} else if (types == 'deprecated') {
                 ipType = 'unmanaged'
@@ -727,7 +739,7 @@ class NetBoxProvider implements IPAMProvider {
 				def hostname = update.masterItem.dns_name
                 def types = update.masterItem.status.value
 				def ipType = 'assigned'
-                if(types == 'active' || types == 'reserved') {
+                if(types == 'reserved') {
                     ipType = 'reserved'
                 } else if (types == 'deprecated') {
                     ipType = 'unmanaged'
@@ -890,6 +902,7 @@ class NetBoxProvider implements IPAMProvider {
 				new OptionType(code: 'netbox.throttleRate', name: 'Throttle Rate', inputType: OptionType.InputType.NUMBER, defaultValue: 0, fieldName: 'serviceThrottleRate', fieldLabel: 'Throttle Rate', fieldContext: 'domain', displayOrder: 5),
 				new OptionType(code: 'netbox.ignoreSsl', name: 'Ignore SSL', inputType: OptionType.InputType.CHECKBOX, defaultValue: 0, fieldName: 'ignoreSsl', fieldLabel: 'Disable SSL SNI Verification', fieldContext: 'domain', displayOrder: 6),
 				new OptionType(code: 'netbox.inventoryExisting', name: 'Inventory Existing', inputType: OptionType.InputType.CHECKBOX, defaultValue: 0, fieldName: 'inventoryExisting', fieldLabel: 'Inventory Existing', fieldContext: 'config', displayOrder: 7),
+                new OptionType(code: 'netbox.deprecate', name: 'Deprecate on Delete', inputType: OptionType.InputType.CHECKBOX, defaultValue: 0, fieldName: 'deprecate', fieldLabel: 'Deprecate on Delete', fieldContext: 'config', displayOrder: 8),
                 new OptionType(code: 'netbox.tags', name: 'Tags', inputType: OptionType.InputType.TEXT, fieldName: 'tags', fieldLabel: 'Tags', fieldContext: 'config', displayOrder: 9, helpText: "value|value2")
 		]
 	}
