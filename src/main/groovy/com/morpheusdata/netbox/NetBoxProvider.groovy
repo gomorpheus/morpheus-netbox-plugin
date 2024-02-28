@@ -131,7 +131,9 @@ class NetBoxProvider implements IPAMProvider {
 			return rtn //
 		}
         def rpcConfig = getRpcConfig(poolServer)
-		HttpApiClient netboxClient = new HttpApiClient()
+        HttpApiClient netboxClient = new HttpApiClient()
+        def networkProxy = morpheusContext.async.setting.getGlobalNetworkProxy()
+        netboxClient.networkProxy = networkProxy
         def tokenResults
 		try {
 			def apiUrl = cleanServiceUrl(poolServer.serviceUrl)
@@ -140,7 +142,7 @@ class NetBoxProvider implements IPAMProvider {
 				def apiUrlObj = new URL(apiUrl)
 				def apiHost = apiUrlObj.host
 				def apiPort = apiUrlObj.port > 0 ? apiUrlObj.port : (apiUrlObj?.protocol?.toLowerCase() == 'https' ? 443 : 80)
-				hostOnline = ConnectionUtils.testHostConnectivity(apiHost, apiPort, true, true, null)
+				hostOnline = ConnectionUtils.testHostConnectivity(apiHost, apiPort, true, true, networkProxy)
 			} catch(e) {
 				log.error("Error parsing URL {}", apiUrl, e)
 			}
@@ -205,12 +207,14 @@ class NetBoxProvider implements IPAMProvider {
 		log.debug("refreshNetworkPoolServer: {}", poolServer.dump())
 		HttpApiClient netboxClient = new HttpApiClient()
 		netboxClient.throttleRate = poolServer.serviceThrottleRate
+        def networkProxy = morpheusContext.async.setting.getGlobalNetworkProxy()
+        netboxClient.networkProxy = networkProxy
 		try {
 			def apiUrl = cleanServiceUrl(poolServer.serviceUrl)
 			def apiUrlObj = new URL(apiUrl)
 			def apiHost = apiUrlObj.host
 			def apiPort = apiUrlObj.port > 0 ? apiUrlObj.port : (apiUrlObj?.protocol?.toLowerCase() == 'https' ? 443 : 80)
-			def hostOnline = ConnectionUtils.testHostConnectivity(apiHost, apiPort, true, true, null)
+			def hostOnline = ConnectionUtils.testHostConnectivity(apiHost, apiPort, true, true, networkProxy)
 
 			log.debug("online: {} - {}", apiHost, hostOnline)
 
@@ -285,6 +289,7 @@ class NetBoxProvider implements IPAMProvider {
 
 	void addMissingPools(NetworkPoolServer poolServer, Collection<Map> chunkedAddList) {
         HttpApiClient client = new HttpApiClient();
+        client.networkProxy = morpheusContext.async.setting.getGlobalNetworkProxy()
         def rpcConfig = getRpcConfig(poolServer)
         HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
 		List<NetworkPool> missingPoolsList = []
@@ -352,6 +357,7 @@ class NetBoxProvider implements IPAMProvider {
 
 	void updateMatchedPools(NetworkPoolServer poolServer, List<SyncTask.UpdateItem<NetworkPool,Map>> chunkedUpdateList) {
         HttpApiClient client = new HttpApiClient();
+        client.networkProxy = morpheusContext.async.setting.getGlobalNetworkProxy()
         def rpcConfig = getRpcConfig(poolServer)
         HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
 		List<NetworkPool> poolsToUpdate = []
@@ -390,6 +396,7 @@ class NetBoxProvider implements IPAMProvider {
 	@Override
 	ServiceResponse createHostRecord(NetworkPoolServer poolServer, NetworkPool networkPool, NetworkPoolIp networkPoolIp, NetworkDomain domain, Boolean createARecord, Boolean createPtrRecord) {
 		HttpApiClient client = new HttpApiClient();
+        client.networkProxy = morpheusContext.async.setting.getGlobalNetworkProxy()
         InetAddressValidator inetAddressValidator = new InetAddressValidator()
         
         def rpcConfig = getRpcConfig(poolServer)
@@ -504,6 +511,7 @@ class NetBoxProvider implements IPAMProvider {
 	@Override
 	ServiceResponse updateHostRecord(NetworkPoolServer poolServer, NetworkPool networkPool, NetworkPoolIp networkPoolIp) {
 		HttpApiClient client = new HttpApiClient();
+        client.networkProxy = morpheusContext.async.setting.getGlobalNetworkProxy()
         def rpcConfig = getRpcConfig(poolServer)
         HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
         def token
@@ -546,6 +554,7 @@ class NetBoxProvider implements IPAMProvider {
 	@Override
 	ServiceResponse deleteHostRecord(NetworkPool networkPool, NetworkPoolIp poolIp, Boolean deleteAssociatedRecords ) {
 		HttpApiClient client = new HttpApiClient();
+        client.networkProxy = morpheusContext.async.setting.getGlobalNetworkProxy()
         def poolServer = morpheus.network.getPoolServerById(networkPool.poolServer.id).blockingGet()
         def rpcConfig = getRpcConfig(poolServer)
         HttpApiClient.RequestOptions requestOptions = new HttpApiClient.RequestOptions(ignoreSSL: rpcConfig.ignoreSSL)
